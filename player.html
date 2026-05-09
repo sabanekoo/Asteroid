@@ -1,0 +1,1545 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0">
+  <title>アステロイデス - プレイヤー</title>
+  <style>
+    :root { --accent: #e94560; --accent-dim: rgba(233,69,96,0.15); }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: 'Segoe UI', sans-serif; background: #1a1a2e; color: #eee; min-height: 100vh; }
+
+    /* PAGE */
+    .page { display: none; min-height: 100vh; flex-direction: column; }
+    .page.active { display: flex; }
+
+    /* TOPBAR */
+    .topbar { background: #16213e; border-bottom: 1px solid #0f3460; padding: 10px 20px; display: flex; align-items: center; gap: 12px; flex-shrink: 0; flex-wrap: nowrap; min-height: 48px; }
+    .topbar h1 { font-size: 16px; color: var(--accent); white-space: nowrap; }
+    .topbar .country-badge { padding: 3px 12px; border-radius: 12px; font-size: 13px; font-weight: bold; border: 1px solid; white-space: nowrap; }
+    .topbar-right { margin-left: auto; display: flex; gap: 8px; align-items: center; flex-shrink: 0; }
+    .turn-info { font-size: 12px; color: #888; white-space: nowrap; }
+
+    /* NAV */
+    .nav { background: #16213e; border-bottom: 1px solid #0f3460; display: flex; flex-shrink: 0; overflow-x: auto; -webkit-overflow-scrolling: touch; }
+    .nav::-webkit-scrollbar { height: 0; }
+    .nav-item { padding: 10px 18px; font-size: 13px; cursor: pointer; white-space: nowrap; color: #888; border-bottom: 2px solid transparent; transition: all 0.15s; }
+    .nav-item:hover { color: #eee; background: #0f3460; }
+    .nav-item.active { color: var(--accent); border-bottom-color: var(--accent); }
+
+    /* COMMON */
+    .container { max-width: 1100px; margin: 0 auto; padding: 24px 20px; width: 100%; }
+    .card { background: #16213e; border: 1px solid #0f3460; border-radius: 8px; padding: 16px; }
+    .card h2 { font-size: 14px; color: #a8dadc; margin-bottom: 12px; text-transform: uppercase; letter-spacing: 1px; }
+
+    .btn { padding: 7px 16px; background: var(--accent); color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 13px; font-weight: bold; white-space: nowrap; }
+    .btn:hover { filter: brightness(1.15); }
+    .btn:disabled { opacity: 0.4; cursor: not-allowed; filter: none; }
+    .btn-blue { background: #457b9d; }
+    .btn-dark { background: #1d3557; }
+    .btn-green { background: #2d6a4f; }
+    .btn-orange { background: #e76f51; }
+    .btn-full { width: 100%; }
+    .btn-sm { padding: 4px 10px; font-size: 12px; }
+
+    .field-input { padding: 8px 12px; background: #0f3460; border: 1px solid #a8dadc44; color: #eee; border-radius: 4px; font-size: 13px; width: 100%; }
+    .field-input:focus { border-color: #a8dadc; outline: none; }
+    .field-input::placeholder { color: #555; }
+    select.field-input { cursor: pointer; }
+
+    .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+    .grid3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 16px; }
+
+    /* LOGIN */
+    #page-login { align-items: center; justify-content: center; background: #1a1a2e; }
+    .login-box { background: #16213e; border: 1px solid #0f3460; border-radius: 12px; padding: 40px 48px; display: flex; flex-direction: column; gap: 14px; width: min(400px, 92vw); text-align: center; }
+    .login-box h1 { color: var(--accent); font-size: 24px; margin-bottom: 4px; }
+    .login-box p { color: #888; font-size: 13px; }
+    .gist-section { border-top: 1px solid #0f3460; padding-top: 14px; margin-top: 4px; }
+    .gist-section p { font-size: 11px; color: #666; margin-bottom: 6px; }
+    .country-select { width: 100%; padding: 8px 12px; background: #0f3460; border: 1px solid #a8dadc44; color: #eee; border-radius: 4px; font-size: 14px; }
+    .err { color: var(--accent); font-size: 12px; min-height: 16px; }
+
+    /* HOME */
+    .stat-row { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 16px; }
+    .stat-box { background: #0f3460; border-radius: 8px; padding: 12px 18px; text-align: center; flex: 1; min-width: 90px; }
+    .stat-val { font-size: 24px; font-weight: bold; color: #a8dadc; }
+    .stat-lbl { font-size: 11px; color: #888; margin-top: 2px; }
+    .menu-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; }
+    .menu-card { background: #0f3460; border: 1px solid #0f3460; border-radius: 8px; padding: 20px; cursor: pointer; text-align: center; transition: all 0.15s; }
+    .menu-card:hover { border-color: #457b9d; background: #1a2f50; }
+    .menu-title { font-size: 15px; font-weight: bold; color: #a8dadc; }
+    .menu-desc { font-size: 11px; color: #888; margin-top: 4px; }
+
+    /* LOG */
+    .log-filters { display: flex; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; }
+    .filter-btn { padding: 4px 12px; border-radius: 12px; font-size: 12px; cursor: pointer; border: 1px solid #0f3460; background: #0f3460; color: #888; transition: all 0.15s; }
+    .filter-btn.active { border-color: var(--accent); color: var(--accent); }
+    .log-entry { background: #0f3460; border-radius: 6px; padding: 10px 12px; border-left: 3px solid #457b9d; margin-bottom: 8px; font-size: 13px; line-height: 1.6; }
+    .log-entry.battle { border-left-color: var(--accent); }
+    .log-entry.event { border-left-color: #f4a261; }
+    .log-entry.capture { border-left-color: #57cc99; }
+    .log-entry.defense { border-left-color: #a8dadc; }
+    .log-entry.spy { border-left-color: #f4a261; background: #1a1a0a; }
+    .log-entry.move { border-left-color: #95d5b2; }
+    .log-meta { font-size: 11px; color: #666; margin-bottom: 4px; }
+
+    /* ARMIES */
+    .army-cards { display: flex; flex-direction: column; gap: 12px; }
+    .army-card { background: #16213e; border: 2px solid #0f3460; border-radius: 8px; padding: 14px; transition: border-color 0.15s; }
+    .army-card.defending { border-color: #457b9d; }
+    .army-card.moving { border-color: #2d6a4f; }
+    .army-header { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; flex-wrap: wrap; }
+    .army-name { font-size: 15px; font-weight: bold; flex: 1; }
+    .army-mode { padding: 2px 10px; border-radius: 10px; font-size: 11px; font-weight: bold; }
+    .mode-idle { background: #1d3557; color: #888; }
+    .mode-defend { background: #1d4b6e; color: #a8dadc; }
+    .mode-move { background: #1a3d2e; color: #95d5b2; }
+    .mode-attack { background: #4a1020; color: #ffb3b3; }
+    .army-stats { display: flex; gap: 16px; font-size: 12px; color: #aaa; margin-bottom: 10px; flex-wrap: wrap; }
+    .army-stat strong { color: #eee; }
+    .army-actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+    .deploy-row { display: flex; gap: 8px; align-items: center; margin-top: 8px; flex-wrap: wrap; }
+    .deploy-input { width: 80px; padding: 5px 8px; background: #0f3460; border: 1px solid #a8dadc44; color: #eee; border-radius: 4px; font-size: 13px; }
+    .special-units { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 6px; }
+    .unit-badge { padding: 2px 8px; border-radius: 10px; font-size: 11px; background: #0f3460; border: 1px solid #a8dadc44; color: #a8dadc; }
+    .reserve-bar { background: #0f3460; border-radius: 6px; padding: 10px 12px; margin-bottom: 12px; display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+    .reserve-val { font-size: 20px; font-weight: bold; color: #57cc99; }
+
+    /* HQ */
+    #page-hq .content-area { display: flex; flex: 1; overflow: hidden; }
+    #hq-sidebar { width: 320px; min-width: 320px; background: #16213e; border-right: 1px solid #0f3460; padding: 14px; overflow-y: auto; display: flex; flex-direction: column; gap: 14px; }
+    #hq-map { flex: 1; overflow: hidden; position: relative; background: #1a1a2e; cursor: grab; user-select: none; }
+    #hq-map:active { cursor: grabbing; }
+    #hq-map-container { position: absolute; top: 0; left: 0; width: 100%; height: 100%; transform-origin: 0 0; display: flex; align-items: center; justify-content: center; }
+    #hq-map-container svg { width: 100%; height: 100%; }
+    .map-zoom-controls { position: absolute; bottom: 12px; right: 12px; z-index: 10; display: flex; flex-direction: column; gap: 4px; }
+    .zoom-btn { width: 34px; height: 34px; background: #16213ecc; border: 1px solid #a8dadc44; color: #eee; border-radius: 4px; cursor: pointer; font-size: 18px; display: flex; align-items: center; justify-content: center; transition: background 0.15s; }
+    .zoom-btn:hover { background: #16213e; border-color: #a8dadc; }
+
+    .hq-section { background: #0f3460; border-radius: 6px; padding: 10px 12px; }
+    .hq-section h3 { font-size: 12px; color: #a8dadc; margin-bottom: 8px; text-transform: uppercase; letter-spacing: 1px; }
+    .order-card { background: #16213e; border: 1px solid #0f3460; border-radius: 6px; padding: 8px 10px; margin-bottom: 6px; font-size: 12px; }
+    .order-card-header { display: flex; align-items: center; gap: 6px; margin-bottom: 4px; }
+    .order-type-badge { padding: 1px 8px; border-radius: 8px; font-size: 10px; font-weight: bold; }
+    .ot-move { background: #1a3d2e; color: #95d5b2; }
+    .ot-defend { background: #1d4b6e; color: #a8dadc; }
+    .ot-attack { background: #4a1020; color: #ffb3b3; }
+    .ot-spy { background: #3d2a10; color: #f4a261; }
+    .path-display { color: #aaa; font-size: 11px; }
+    .path-arrow { color: #457b9d; }
+    .ap-bar { height: 6px; background: #1a1a2e; border-radius: 3px; overflow: hidden; margin-top: 4px; }
+    .ap-fill { height: 100%; background: #57cc99; border-radius: 3px; transition: width 0.3s; }
+    .ap-fill.low { background: #f4a261; }
+    .ap-fill.empty { background: var(--accent); }
+
+    /* MAP INTERACTION */
+    .pref-group { cursor: pointer; }
+    .pref-group path, .pref-group polygon { stroke: #444; stroke-width: 0.5; transition: all 0.1s; }
+    .pref-group:hover path, .pref-group:hover polygon { stroke: #fff; stroke-width: 1.2; opacity: 0.8; }
+    .pref-group.in-path path, .pref-group.in-path polygon { stroke: #57cc99; stroke-width: 2; }
+    .pref-group.army-here path, .pref-group.army-here polygon { stroke: #a8dadc; stroke-width: 1.5; }
+    .pref-group.enemy-here path, .pref-group.enemy-here polygon { stroke: var(--accent); stroke-width: 1.5; }
+    #hq-tooltip { position: fixed; background: rgba(0,0,0,0.9); color: #fff; padding: 6px 12px; border-radius: 4px; font-size: 12px; pointer-events: none; display: none; z-index: 999; border: 1px solid #0f3460; max-width: 200px; }
+
+    /* SETTINGS */
+    .settings-form { display: flex; flex-direction: column; gap: 10px; max-width: 400px; }
+    label { font-size: 12px; color: #a8dadc; margin-bottom: 2px; display: block; }
+
+    /* SCROLLBAR */
+    ::-webkit-scrollbar { width: 4px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: #0f3460; border-radius: 2px; }
+
+    @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }
+    .syncing { animation: pulse 1s infinite; }
+
+    /* ===== MOBILE ===== */
+    @media (max-width: 640px) {
+      html, body { overflow-x: hidden; width: 100%; }
+      .page { max-width: 100vw; overflow-x: hidden; }
+
+      /* トップバー */
+      .topbar { padding: 6px 10px; gap: 4px; flex-wrap: wrap; min-height: auto; align-items: center; }
+      .topbar h1 { font-size: 12px; flex-shrink: 0; }
+      .topbar .country-badge { font-size: 10px; padding: 2px 6px; }
+      .turn-info { font-size: 10px; }
+      .topbar-right { gap: 3px; margin-left: auto; }
+      .btn { font-size: 11px; padding: 5px 10px; }
+      .btn-sm { padding: 3px 6px; font-size: 10px; }
+
+      /* ナビ */
+      .nav-item { padding: 8px 9px; font-size: 11px; }
+
+      /* コンテナ */
+      .container { padding: 10px; }
+      .grid2, .grid3 { grid-template-columns: 1fr; }
+      .card { padding: 12px; }
+      .card h2 { font-size: 12px; }
+
+      /* ログイン */
+      .login-box { padding: 24px 16px; }
+
+      /* ホーム */
+      .stat-row { gap: 8px; }
+      .stat-val { font-size: 20px; }
+      .stat-box { padding: 8px 10px; }
+      .menu-grid { gap: 8px; }
+      .menu-card { padding: 12px 8px; }
+      .menu-title { font-size: 13px; }
+      .menu-desc { font-size: 10px; }
+
+      /* 軍隊 */
+      .reserve-bar { flex-wrap: wrap; }
+      .army-header { gap: 6px; flex-wrap: wrap; }
+      .army-stats { gap: 6px; font-size: 11px; flex-wrap: wrap; }
+      .army-actions { gap: 6px; flex-wrap: wrap; }
+      .deploy-row { gap: 6px; flex-wrap: wrap; }
+      .deploy-input { width: 70px; }
+
+      /* 設定 */
+      .settings-form { gap: 8px; max-width: 100%; }
+
+      /* HQ: 縦並び */
+      #page-hq .content-area { flex-direction: column; overflow: auto; }
+      #hq-sidebar { width: 100%; min-width: 0; border-right: none; border-bottom: 1px solid #0f3460; max-height: 50vh; overflow-y: auto; }
+      #hq-map { flex: none; height: 44vh; }
+    }
+  </style>
+</head>
+<body>
+
+<!-- ===================== LOGIN ===================== -->
+<div class="page active" id="page-login">
+  <div class="login-box">
+    <h1>アステロイデス</h1>
+    <p>自国を選択してパスワードを入力してください</p>
+    <div id="login-load-status" style="font-size:11px;color:#888;min-height:16px;"></div>
+
+    <select class="country-select" id="country-select">
+      <option value="">-- データ読み込み中 --</option>
+    </select>
+
+    <input type="password" class="field-input" id="player-pw-input" placeholder="パスワード" onkeydown="if(event.key==='Enter')doPlayerLogin()" />
+    <button class="btn btn-full" onclick="doPlayerLogin()">ログイン</button>
+    <div class="err" id="login-err"></div>
+  </div>
+</div>
+
+<!-- ===================== HOME ===================== -->
+<div class="page" id="page-home">
+  <div class="topbar">
+    <h1>アステロイデス</h1>
+    <div class="country-badge" id="home-country-badge"></div>
+    <div class="turn-info">ターン <span id="home-turn">0</span></div>
+    <div class="topbar-right">
+      <button class="btn btn-sm btn-dark" onclick="syncData()">同期</button>
+      <button class="btn btn-sm btn-dark" onclick="doLogout()">ログアウト</button>
+    </div>
+  </div>
+  <nav class="nav">
+    <div class="nav-item active" onclick="gotoPage('home')">ホーム</div>
+    <div class="nav-item" onclick="gotoPage('log')">ログ</div>
+    <div class="nav-item" onclick="gotoPage('armies')">軍隊処理</div>
+    <div class="nav-item" onclick="gotoPage('hq')">参謀本部</div>
+    <div class="nav-item" onclick="gotoPage('settings')">設定</div>
+  </nav>
+  <div class="container" style="flex:1;overflow-y:auto;">
+    <div class="stat-row" id="home-stats"></div>
+    <div class="grid2" style="gap:20px;">
+      <div class="card">
+        <h2>ナビゲーション</h2>
+        <div class="menu-grid">
+          <div class="menu-card" onclick="gotoPage('log')">
+            <div class="menu-title">ログ</div>
+            <div class="menu-desc">前ターンの処理ログ</div>
+          </div>
+          <div class="menu-card" onclick="gotoPage('armies')">
+            <div class="menu-title">軍隊処理</div>
+            <div class="menu-desc">兵士配置・軍隊管理</div>
+          </div>
+          <div class="menu-card" onclick="gotoPage('hq')">
+            <div class="menu-title">参謀本部</div>
+            <div class="menu-desc">移動・攻撃命令の設定</div>
+          </div>
+          <div class="menu-card" onclick="gotoPage('settings')">
+            <div class="menu-title">設定</div>
+            <div class="menu-desc">国の色・パスワード変更</div>
+          </div>
+        </div>
+      </div>
+      <div class="card">
+        <h2>自国の軍隊</h2>
+        <div id="home-armies-summary"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ===================== LOG ===================== -->
+<div class="page" id="page-log">
+  <div class="topbar">
+    <h1>アステロイデス</h1>
+    <div class="country-badge" id="log-country-badge"></div>
+    <div class="topbar-right">
+      <button class="btn btn-sm btn-dark" onclick="syncData()">同期</button>
+      <button class="btn btn-sm btn-dark" onclick="doLogout()">ログアウト</button>
+    </div>
+  </div>
+  <nav class="nav">
+    <div class="nav-item" onclick="gotoPage('home')">ホーム</div>
+    <div class="nav-item active" onclick="gotoPage('log')">ログ</div>
+    <div class="nav-item" onclick="gotoPage('armies')">軍隊処理</div>
+    <div class="nav-item" onclick="gotoPage('hq')">参謀本部</div>
+    <div class="nav-item" onclick="gotoPage('settings')">設定</div>
+  </nav>
+  <div class="container" style="flex:1;overflow-y:auto;">
+    <div class="card">
+      <h2>戦闘・処理ログ</h2>
+      <div class="log-filters">
+        <div class="filter-btn active" onclick="setLogFilter('all',this)">全て</div>
+        <div class="filter-btn" onclick="setLogFilter('mine',this)">自国関連</div>
+        <div class="filter-btn" onclick="setLogFilter('battle',this)">戦闘</div>
+        <div class="filter-btn" onclick="setLogFilter('event',this)">イベント</div>
+        <div class="filter-btn" onclick="setLogFilter('capture',this)">占領</div>
+      </div>
+      <div id="log-entries"></div>
+    </div>
+  </div>
+</div>
+
+<!-- ===================== ARMIES ===================== -->
+<div class="page" id="page-armies">
+  <div class="topbar">
+    <h1>アステロイデス</h1>
+    <div class="country-badge" id="armies-country-badge"></div>
+    <div class="topbar-right">
+      <button class="btn btn-sm btn-blue" onclick="saveOrders()">命令を保存</button>
+      <button class="btn btn-sm btn-dark" onclick="syncData()">同期</button>
+      <button class="btn btn-sm btn-dark" onclick="doLogout()">ログアウト</button>
+    </div>
+  </div>
+  <nav class="nav">
+    <div class="nav-item" onclick="gotoPage('home')">ホーム</div>
+    <div class="nav-item" onclick="gotoPage('log')">ログ</div>
+    <div class="nav-item active" onclick="gotoPage('armies')">軍隊処理</div>
+    <div class="nav-item" onclick="gotoPage('hq')">参謀本部</div>
+    <div class="nav-item" onclick="gotoPage('settings')">設定</div>
+  </nav>
+  <div class="container" style="flex:1;overflow-y:auto;">
+    <div class="reserve-bar card" style="margin-bottom:16px;">
+      <div>
+        <div style="font-size:12px;color:#a8dadc;">予備兵力</div>
+        <div class="reserve-val" id="reserve-display">0</div>
+      </div>
+      <div style="font-size:12px;color:#888;flex:1;">
+        予備兵力を軍隊に配属できます。<br>各軍隊の「配属」欄に人数を入力して「配属する」を押してください。
+      </div>
+    </div>
+    <div class="army-cards" id="army-cards"></div>
+  </div>
+</div>
+
+<!-- ===================== HQ ===================== -->
+<div class="page" id="page-hq">
+  <div class="topbar">
+    <h1>参謀本部</h1>
+    <div class="country-badge" id="hq-country-badge"></div>
+    <div class="topbar-right">
+      <button class="btn btn-sm btn-blue" onclick="saveOrders()">命令を保存</button>
+      <button class="btn btn-sm btn-dark" onclick="syncData()">同期</button>
+      <button class="btn btn-sm btn-dark" onclick="doLogout()">ログアウト</button>
+    </div>
+  </div>
+  <nav class="nav">
+    <div class="nav-item" onclick="gotoPage('home')">ホーム</div>
+    <div class="nav-item" onclick="gotoPage('log')">ログ</div>
+    <div class="nav-item" onclick="gotoPage('armies')">軍隊処理</div>
+    <div class="nav-item active" onclick="gotoPage('hq')">参謀本部</div>
+    <div class="nav-item" onclick="gotoPage('settings')">設定</div>
+  </nav>
+  <div class="content-area" style="flex:1;display:flex;overflow:hidden;">
+    <!-- HQ Sidebar -->
+    <div id="hq-sidebar">
+
+      <!-- 軍隊選択 -->
+      <div class="hq-section">
+        <h3>軍隊を選択</h3>
+        <select class="field-input" id="hq-army-select" onchange="onHqArmySelect()">
+          <option value="">-- 軍隊を選択 --</option>
+        </select>
+        <div id="hq-army-info" style="margin-top:8px;font-size:12px;color:#aaa;"></div>
+      </div>
+
+      <!-- 命令設定 -->
+      <div class="hq-section">
+        <h3>命令設定</h3>
+        <div style="display:flex;flex-direction:column;gap:8px;">
+          <div>
+            <label style="font-size:11px;color:#888;">命令種別</label>
+            <select class="field-input" id="hq-order-type" onchange="onOrderTypeChange()">
+              <option value="move">移動</option>
+              <option value="defend">防衛配置</option>
+              <option value="attack">攻撃（占領）</option>
+            </select>
+          </div>
+          <div>
+            <label style="font-size:11px;color:#888;">開始単位時間（0〜45）</label>
+            <input type="number" class="field-input" id="hq-start-time" min="0" max="45" value="0" />
+          </div>
+          <div id="hq-path-section">
+            <label style="font-size:11px;color:#888;">経路（地図をクリックして追加）</label>
+            <div id="hq-path-display" style="font-size:12px;color:#aaa;min-height:20px;word-break:break-all;">未設定</div>
+            <div id="hq-ap-display" style="margin-top:4px;">
+              <div style="display:flex;justify-content:space-between;font-size:11px;color:#888;margin-bottom:2px;">
+                <span>行動力消費</span><span id="hq-ap-cost">0</span><span>/ 50</span>
+              </div>
+              <div class="ap-bar"><div class="ap-fill" id="hq-ap-bar" style="width:0%;"></div></div>
+            </div>
+            <button class="btn btn-sm btn-dark btn-full" style="margin-top:6px;" onclick="clearPath()">経路クリア</button>
+          </div>
+          <div id="hq-defend-section" style="display:none;">
+            <label style="font-size:11px;color:#888;">防衛地点（現在地を自動設定）</label>
+            <div id="hq-defend-target" style="font-size:13px;color:#a8dadc;min-height:20px;">未選択</div>
+          </div>
+          <button class="btn btn-green btn-full" onclick="addOrder()">命令を追加</button>
+        </div>
+      </div>
+
+      <!-- 諜報 -->
+      <div class="hq-section">
+        <h3>諜報（1ターン1回）</h3>
+        <div style="display:flex;flex-direction:column;gap:6px;">
+          <div style="font-size:11px;color:#888;">成功率25%、発覚率50%。地図をクリックして対象県を選択。</div>
+          <div style="display:flex;gap:6px;align-items:center;">
+            <div id="spy-pref-display" style="flex:1;font-size:12px;padding:5px 8px;background:#0f3460;border-radius:4px;color:#a8dadc;">地図から選択</div>
+            <button class="btn btn-sm btn-dark" id="spy-select-btn" onclick="startSpySelect()">選択</button>
+          </div>
+          <button class="btn btn-sm btn-orange btn-full" id="spy-btn" onclick="doSpyAction()">諜報実行</button>
+          <div id="spy-results" style="font-size:11px;color:#aaa;max-height:80px;overflow-y:auto;"></div>
+        </div>
+      </div>
+
+      <!-- 登録済み命令 -->
+      <div class="hq-section" style="flex:1;min-height:0;display:flex;flex-direction:column;">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">
+          <h3 style="margin:0;">登録済み命令</h3>
+          <button class="btn btn-sm btn-dark" onclick="clearAllOrders()">全消去</button>
+        </div>
+        <div id="hq-order-list" style="overflow-y:auto;flex:1;"></div>
+      </div>
+    </div>
+
+    <!-- HQ Map -->
+    <div id="hq-map">
+      <div id="hq-map-container"><div style="color:#aaa;">地図を読み込み中...</div></div>
+      <div class="map-zoom-controls">
+        <button class="zoom-btn" onclick="hqZoomIn()" title="拡大">＋</button>
+        <button class="zoom-btn" onclick="hqZoomReset()" title="リセット">⟳</button>
+        <button class="zoom-btn" onclick="hqZoomOut()" title="縮小">−</button>
+      </div>
+    </div>
+  </div>
+</div>
+<div id="hq-tooltip"></div>
+
+<!-- ===================== SETTINGS ===================== -->
+<div class="page" id="page-settings">
+  <div class="topbar">
+    <h1>アステロイデス</h1>
+    <div class="country-badge" id="settings-country-badge"></div>
+    <div class="topbar-right">
+      <button class="btn btn-sm btn-dark" onclick="doLogout()">ログアウト</button>
+    </div>
+  </div>
+  <nav class="nav">
+    <div class="nav-item" onclick="gotoPage('home')">ホーム</div>
+    <div class="nav-item" onclick="gotoPage('log')">ログ</div>
+    <div class="nav-item" onclick="gotoPage('armies')">軍隊処理</div>
+    <div class="nav-item" onclick="gotoPage('hq')">参謀本部</div>
+    <div class="nav-item active" onclick="gotoPage('settings')">設定</div>
+  </nav>
+  <div class="container" style="flex:1;overflow-y:auto;">
+    <div class="grid2">
+      <div class="card">
+        <h2>国の設定</h2>
+        <div class="settings-form">
+          <div>
+            <label>国の旗色</label>
+            <input type="color" id="settings-color" style="width:60px;height:36px;border:none;cursor:pointer;border-radius:4px;" />
+          </div>
+          <div>
+            <label>新しいパスワード</label>
+            <input type="password" class="field-input" id="settings-new-pw" placeholder="新しいパスワード" />
+          </div>
+          <div>
+            <label>パスワード確認</label>
+            <input type="password" class="field-input" id="settings-confirm-pw" placeholder="もう一度入力" />
+          </div>
+          <button class="btn btn-blue" onclick="saveSettings()">設定を保存</button>
+          <div id="settings-msg" style="font-size:12px;min-height:16px;color:#57cc99;"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-database-compat.js"></script>
+<script src="map-svg.js"></script>
+<script>
+// ============================================================
+//  Firebase 設定（ここを自分のプロジェクトの値に変更してください）
+// ============================================================
+const FIREBASE_CONFIG = {
+  apiKey:            "AIzaSyCjYUL9nzaE_JCVIIAc9rhBkHRNXurgKsQ",
+  authDomain:        "asteroides-a5ee1.firebaseapp.com",
+  databaseURL:       "https://asteroides-a5ee1-default-rtdb.asia-southeast1.firebasedatabase.app",
+  projectId:         "asteroides-a5ee1",
+  storageBucket:     "asteroides-a5ee1.firebasestorage.app",
+  messagingSenderId: "674362912966",
+  appId:             "1:674362912966:web:c96de9736c6580f9bb67c7"
+};
+firebase.initializeApp(FIREBASE_CONFIG);
+const GAME_REF = firebase.database().ref('gamestate');
+
+// ============================================================
+//  定数・隣接データ
+// ============================================================
+
+const NAMES = {
+  Hokkaido:"北海道",Aomori:"青森県",Iwate:"岩手県",Miyagi:"宮城県",
+  Akita:"秋田県",Yamagata:"山形県",Fukushima:"福島県",Ibaraki:"茨城県",
+  Tochigi:"栃木県",Gunma:"群馬県",Saitama:"埼玉県",Chiba:"千葉県",
+  Tokyo:"東京都",Kanagawa:"神奈川県",Niigata:"新潟県",Toyama:"富山県",
+  Ishikawa:"石川県",Fukui:"福井県",Gifu:"岐阜県",Yamanashi:"山梨県",Nagano:"長野県",
+  Shizuoka:"静岡県",Aichi:"愛知県",Mie:"三重県",Shiga:"滋賀県",
+  Kyoto:"京都府",Osaka:"大阪府",Hyogo:"兵庫県",Nara:"奈良県",
+  Wakayama:"和歌山県",Tottori:"鳥取県",Shimane:"島根県",Okayama:"岡山県",
+  Hiroshima:"広島県",Yamaguchi:"山口県",Tokushima:"徳島県",Kagawa:"香川県",
+  Ehime:"愛媛県",Kochi:"高知県",Fukuoka:"福岡県",Saga:"佐賀県",
+  Nagasaki:"長崎県",Kumamoto:"熊本県",Oita:"大分県",Miyazaki:"宮崎県",
+  Kagoshima:"鹿児島県",Okinawa:"沖縄県"
+};
+const PREFS = Object.keys(NAMES);
+
+const ADJACENCY = {
+  Hokkaido:["Aomori"],Aomori:["Hokkaido","Iwate","Akita"],Iwate:["Aomori","Akita","Miyagi","Yamagata"],
+  Akita:["Aomori","Iwate","Miyagi","Yamagata"],Miyagi:["Iwate","Akita","Yamagata","Fukushima"],
+  Yamagata:["Akita","Iwate","Miyagi","Fukushima","Niigata"],
+  Fukushima:["Miyagi","Yamagata","Niigata","Tochigi","Ibaraki","Gunma","Yamaguchi"],
+  Niigata:["Yamagata","Fukushima","Gunma","Nagano","Toyama"],
+  Tochigi:["Fukushima","Ibaraki","Gunma","Saitama"],Ibaraki:["Fukushima","Tochigi","Saitama","Chiba"],
+  Gunma:["Fukushima","Tochigi","Niigata","Saitama","Nagano"],
+  Saitama:["Gunma","Tochigi","Ibaraki","Chiba","Tokyo","Yamanashi","Nagano"],
+  Chiba:["Ibaraki","Saitama","Tokyo"],Tokyo:["Saitama","Chiba","Kanagawa","Yamanashi"],
+  Kanagawa:["Tokyo","Yamanashi","Shizuoka"],
+  Yamanashi:["Nagano","Saitama","Tokyo","Kanagawa","Shizuoka"],
+  Shizuoka:["Kanagawa","Yamanashi","Nagano","Aichi"],
+  Nagano:["Niigata","Gunma","Saitama","Yamanashi","Shizuoka","Aichi","Gifu","Toyama"],
+  Toyama:["Niigata","Nagano","Gifu","Ishikawa"],Ishikawa:["Toyama","Fukui","Gifu"],
+  Fukui:["Ishikawa","Gifu","Shiga","Kyoto"],
+  Gifu:["Toyama","Ishikawa","Fukui","Shiga","Mie","Aichi","Nagano"],
+  Aichi:["Shizuoka","Nagano","Gifu","Mie"],Mie:["Aichi","Gifu","Shiga","Kyoto","Nara","Wakayama"],
+  Shiga:["Fukui","Gifu","Mie","Kyoto","Nara"],Kyoto:["Fukui","Shiga","Mie","Nara","Osaka","Hyogo"],
+  Osaka:["Kyoto","Nara","Wakayama","Hyogo"],Nara:["Mie","Shiga","Kyoto","Osaka","Wakayama"],
+  Wakayama:["Mie","Nara","Osaka"],Hyogo:["Kyoto","Osaka","Tottori","Okayama","Tokushima"],
+  Tottori:["Hyogo","Okayama","Shimane","Hiroshima"],Shimane:["Tottori","Hiroshima","Yamaguchi"],
+  Okayama:["Hyogo","Tottori","Hiroshima","Kagawa"],
+  Hiroshima:["Shimane","Tottori","Okayama","Yamaguchi","Ehime"],
+  Yamaguchi:["Shimane","Hiroshima","Fukuoka","Fukushima"],
+  Kagawa:["Okayama","Tokushima","Ehime","Kochi"],Tokushima:["Kagawa","Kochi","Hyogo"],
+  Ehime:["Kagawa","Kochi","Hiroshima"],Kochi:["Tokushima","Ehime","Kagawa"],
+  Fukuoka:["Yamaguchi","Saga","Kumamoto","Oita"],Saga:["Fukuoka","Nagasaki","Kumamoto"],
+  Nagasaki:["Saga","Kumamoto"],Kumamoto:["Fukuoka","Saga","Nagasaki","Oita","Miyazaki","Kagoshima"],
+  Oita:["Fukuoka","Kumamoto","Miyazaki"],Miyazaki:["Oita","Kumamoto","Kagoshima"],
+  Kagoshima:["Miyazaki","Kumamoto","Okinawa"],Okinawa:["Kagoshima"]
+};
+
+// ============================================================
+//  状態
+// ============================================================
+let gameState = null;
+let myCountryId = null;
+let currentPage = 'login';
+let logFilter = 'all';
+let hqMapReady = false;
+let hqPath = [];
+let hqDefendTarget = null;
+let hqSelectedArmyIdx = null;
+let hqMapWasDragging = false;
+let hqSpyMode = false;
+let spyTargetPref = null;
+
+// Map zoom/pan state
+let hqZoomScale = 1, hqPanX = 0, hqPanY = 0;
+
+function uid() { return '_' + Math.random().toString(36).slice(2,10); }
+
+// ============================================================
+//  テーマ: 国のカラーをアクセントに適用
+// ============================================================
+function hexToRgba(hex, alpha) {
+  const r = parseInt(hex.slice(1,3), 16);
+  const g = parseInt(hex.slice(3,5), 16);
+  const b = parseInt(hex.slice(5,7), 16);
+  return `rgba(${r},${g},${b},${alpha})`;
+}
+
+function applyCountryTheme(color) {
+  if (!color || !/^#[0-9a-fA-F]{6}$/.test(color)) return;
+  const root = document.documentElement;
+  root.style.setProperty('--accent', color);
+  root.style.setProperty('--accent-dim', hexToRgba(color, 0.15));
+}
+
+// ============================================================
+//  Firebase 読み書き
+// ============================================================
+function normalizeGameState(gs) {
+  if (!gs) return gs;
+  gs.countries     = gs.countries     || [];
+  gs.territories   = gs.territories   || {};
+  gs.armies        = gs.armies        || {};
+  gs.pendingOrders = gs.pendingOrders || [];
+  gs.gameLog       = gs.gameLog       || [];
+  gs.spyResults    = gs.spyResults    || {};
+  gs.spyAlerts     = gs.spyAlerts     || {};
+  return gs;
+}
+
+async function autoLoadGist() {
+  document.getElementById('login-load-status').textContent = 'データを読み込み中...';
+  try {
+    const snapshot = await GAME_REF.get();
+    if (!snapshot.exists()) {
+      gameState = { turn: 0, countries: [], territories: {}, armies: {}, pendingOrders: [], gameLog: [] };
+      document.getElementById('login-load-status').textContent = 'データなし（管理者がゲームを設定してください）';
+      document.getElementById('country-select').innerHTML = '<option value="">-- データなし --</option>';
+      return;
+    }
+    gameState = normalizeGameState(snapshot.val());
+    populateCountrySelect();
+    document.getElementById('login-load-status').textContent = `読み込み完了（ターン${gameState.turn}）`;
+  } catch (e) {
+    document.getElementById('login-load-status').textContent = `読み込み失敗: ${e.message}`;
+    document.getElementById('country-select').innerHTML = '<option value="">-- 読み込み失敗 --</option>';
+  }
+}
+
+function populateCountrySelect() {
+  const sel = document.getElementById('country-select');
+  sel.innerHTML = '<option value="">-- 国を選択 --</option>';
+  if (!gameState || !gameState.countries) return;
+  gameState.countries.forEach(c => {
+    const opt = document.createElement('option');
+    opt.value = c.id;
+    opt.textContent = c.name;
+    sel.appendChild(opt);
+  });
+}
+
+async function syncData() {
+  try {
+    const snapshot = await GAME_REF.get();
+    if (!snapshot.exists()) return;
+    const newState = normalizeGameState(snapshot.val());
+    const myOrders = gameState ? (gameState.pendingOrders || []).filter(o => o.countryId === myCountryId) : [];
+    gameState = newState;
+    const otherOrders = (gameState.pendingOrders || []).filter(o => o.countryId !== myCountryId);
+    gameState.pendingOrders = [...otherOrders, ...myOrders];
+    renderCurrentPage();
+  } catch (e) {
+    console.error('sync failed', e);
+  }
+}
+
+async function saveOrders() {
+  if (!gameState) return;
+  try {
+    await GAME_REF.set(gameState);
+    alert('命令を保存しました');
+  } catch (e) {
+    alert(`保存失敗: ${e.message}`);
+  }
+}
+
+// ============================================================
+//  ログイン / ログアウト
+// ============================================================
+function doPlayerLogin() {
+  const cid = document.getElementById('country-select').value;
+  const pw = document.getElementById('player-pw-input').value;
+  const errEl = document.getElementById('login-err');
+  if (!gameState) { errEl.textContent = 'まずデータを読み込んでください'; return; }
+  if (!cid) { errEl.textContent = '国を選択してください'; return; }
+  const country = gameState.countries.find(c => c.id === cid);
+  if (!country) { errEl.textContent = '国が見つかりません'; return; }
+  if (country.password !== pw) { errEl.textContent = 'パスワードが違います'; return; }
+  myCountryId = cid;
+  applyCountryTheme(country.color);
+  gotoPage('home');
+}
+
+function doLogout() {
+  myCountryId = null;
+  gotoPage('login');
+}
+
+// ============================================================
+//  ページ遷移
+// ============================================================
+function gotoPage(name) {
+  document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+  document.getElementById('page-' + name).classList.add('active');
+  currentPage = name;
+  if (name !== 'login') updateNavActive(name);
+  renderCurrentPage();
+}
+
+function updateNavActive(name) {
+  document.querySelectorAll('.nav').forEach(nav => {
+    nav.querySelectorAll('.nav-item').forEach(item => {
+      item.classList.toggle('active', item.textContent.trim() === navLabel(name));
+    });
+  });
+}
+
+function navLabel(name) {
+  return { home:'ホーム', log:'ログ', armies:'軍隊処理', hq:'参謀本部', settings:'設定' }[name] || '';
+}
+
+function renderCurrentPage() {
+  if (currentPage === 'home') renderHome();
+  else if (currentPage === 'log') renderLog();
+  else if (currentPage === 'armies') renderArmies();
+  else if (currentPage === 'hq') renderHQ();
+  else if (currentPage === 'settings') renderSettings();
+}
+
+// ============================================================
+//  共通: 国バッジ更新
+// ============================================================
+function updateBadges() {
+  const c = myCountry();
+  if (!c) return;
+  const badge = `<span style="background:${c.color}22;color:${c.color};border-color:${c.color}44;">${c.name}</span>`;
+  ['home','log','armies','hq','settings'].forEach(p => {
+    const el = document.getElementById(p + '-country-badge');
+    if (el) el.innerHTML = badge;
+  });
+}
+
+function myCountry() {
+  if (!gameState || !myCountryId) return null;
+  return gameState.countries.find(c => c.id === myCountryId);
+}
+
+function myArmies() {
+  if (!gameState || !myCountryId) return null;
+  const a = gameState.armies && gameState.armies[myCountryId];
+  if (!a) return null;
+  return a;
+}
+
+function ensureArmies() {
+  if (!gameState.armies) gameState.armies = {};
+  if (!gameState.armies[myCountryId]) {
+    gameState.armies[myCountryId] = {
+      reserve: 0,
+      units: Array.from({ length: 5 }, (_, i) => ({
+        id: uid(), name: `第${i+1}軍`, troops: 0, location: null, ap: 50, orders: [], specialUnits: [], mode: 'idle'
+      }))
+    };
+  }
+  if (!gameState.armies[myCountryId].units) {
+    gameState.armies[myCountryId].units = Array.from({ length: 5 }, (_, i) => ({
+      id: uid(), name: `第${i+1}軍`, troops: 0, location: null, ap: 50, orders: [], specialUnits: [], mode: 'idle'
+    }));
+  }
+}
+
+// ============================================================
+//  HOME
+// ============================================================
+function renderHome() {
+  updateBadges();
+  const c = myCountry();
+  if (!c) return;
+  document.getElementById('home-turn').textContent = gameState.turn;
+
+  const myPrefs = PREFS.filter(p => gameState.territories && gameState.territories[p] === myCountryId);
+  ensureArmies();
+  const armies = myArmies();
+  const totalTroops = armies.units.reduce((s, a) => s + (a.troops || 0), 0);
+
+  document.getElementById('home-stats').innerHTML = `
+    <div class="stat-box"><div class="stat-val">${myPrefs.length}</div><div class="stat-lbl">所有県数</div></div>
+    <div class="stat-box"><div class="stat-val">${totalTroops}</div><div class="stat-lbl">総兵力</div></div>
+    <div class="stat-box"><div class="stat-val">${armies.reserve || 0}</div><div class="stat-lbl">予備兵力</div></div>
+    <div class="stat-box"><div class="stat-val">${gameState.turn}</div><div class="stat-lbl">ターン</div></div>
+  `;
+
+  document.getElementById('home-armies-summary').innerHTML = armies.units.map(a => {
+    const modeLabel = { idle:'待機', defend:'防衛', move:'移動中', attack:'攻撃中' }[a.mode] || '待機';
+    const modeClass = { idle:'mode-idle', defend:'mode-defend', move:'mode-move', attack:'mode-attack' }[a.mode] || 'mode-idle';
+    return `<div style="display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid #0f3460;">
+      <div style="font-size:13px;flex:1;">${a.name}</div>
+      <div style="font-size:12px;color:#aaa;">${a.troops}名</div>
+      <span class="army-mode ${modeClass}">${modeLabel}</span>
+    </div>`;
+  }).join('');
+}
+
+// ============================================================
+//  LOG
+// ============================================================
+function renderLog() {
+  updateBadges();
+  const baseEntries = (gameState && gameState.gameLog) ? gameState.gameLog : [];
+  // 諜報結果・警告を追加
+  const spyEntries = [];
+  if (myCountryId) {
+    (gameState.spyResults && gameState.spyResults[myCountryId] || []).forEach(r => {
+      spyEntries.push({ type: 'spy', turn: r.turn, text: `【諜報情報】${r.text}` });
+    });
+    (gameState.spyAlerts && gameState.spyAlerts[myCountryId] || []).forEach(a => {
+      spyEntries.push({ type: 'spy', turn: a.turn, text: `【警告】${a.text}` });
+    });
+  }
+  const allEntries = [...spyEntries, ...baseEntries].sort((a, b) => (b.turn || 0) - (a.turn || 0));
+  const filtered = allEntries.filter(e => {
+    if (logFilter === 'all') return true;
+    if (logFilter === 'mine') {
+      const c = myCountry();
+      return c && e.text && e.text.includes(c.name);
+    }
+    return e.type === logFilter;
+  });
+  const el = document.getElementById('log-entries');
+  if (!filtered.length) {
+    el.innerHTML = '<div style="color:#555;font-size:13px;padding:8px;">該当するログがありません</div>';
+    return;
+  }
+  el.innerHTML = filtered.map(e => `
+    <div class="log-entry ${e.type || ''}">
+      <div class="log-meta">ターン${e.turn || '?'} ${e.timestamp || ''}</div>
+      ${e.text || ''}
+    </div>`).join('');
+}
+
+function setLogFilter(f, el) {
+  logFilter = f;
+  document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
+  el.classList.add('active');
+  renderLog();
+}
+
+// ============================================================
+//  ARMIES
+// ============================================================
+function renderArmies() {
+  updateBadges();
+  ensureArmies();
+  const armies = myArmies();
+  const c = myCountry();
+  document.getElementById('reserve-display').textContent = armies.reserve || 0;
+
+  document.getElementById('army-cards').innerHTML = armies.units.map((a, i) => {
+    const modeLabel = { idle:'待機', defend:'防衛', move:'移動中', attack:'攻撃中' }[a.mode] || '待機';
+    const modeClass = { idle:'mode-idle', defend:'mode-defend', move:'mode-move', attack:'mode-attack' }[a.mode] || 'mode-idle';
+    const cardClass = a.mode === 'defend' ? 'defending' : a.mode === 'move' ? 'moving' : '';
+    const loc = a.location ? NAMES[a.location] || a.location : '未配置';
+    const specialHtml = (a.specialUnits && a.specialUnits.length)
+      ? `<div class="special-units">${a.specialUnits.map(u => `<span class="unit-badge">${u}</span>`).join('')}</div>`
+      : '';
+    return `<div class="army-card ${cardClass}">
+      <div class="army-header">
+        <div class="army-name">${a.name}</div>
+        <span class="army-mode ${modeClass}">${modeLabel}</span>
+      </div>
+      <div class="army-stats">
+        <span>兵力: <strong>${a.troops}</strong>名</span>
+        <span>位置: <strong>${loc}</strong></span>
+        <span>行動力: <strong>${a.ap}</strong>/50</span>
+      </div>
+      ${specialHtml}
+      <div class="deploy-row">
+        <input type="number" class="deploy-input" id="deploy-amt-${i}" min="1" placeholder="人数" />
+        <button class="btn btn-sm btn-blue" onclick="deployTroops(${i})">配属する</button>
+        <button class="btn btn-sm ${a.mode === 'defend' ? 'btn-orange' : 'btn-dark'}" onclick="toggleDefend(${i})">
+          ${a.mode === 'defend' ? '防衛解除' : '防衛配置'}
+        </button>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function deployTroops(idx) {
+  ensureArmies();
+  const armies = myArmies();
+  const amt = parseInt(document.getElementById(`deploy-amt-${idx}`).value);
+  if (!amt || amt <= 0) { alert('人数を入力してください'); return; }
+  if (amt > (armies.reserve || 0)) { alert(`予備兵力が足りません（現在: ${armies.reserve}名）`); return; }
+  armies.units[idx].troops = (armies.units[idx].troops || 0) + amt;
+  armies.reserve -= amt;
+  renderArmies();
+}
+
+function toggleDefend(idx) {
+  ensureArmies();
+  const armies = myArmies();
+  const a = armies.units[idx];
+  if (a.mode === 'defend') {
+    a.mode = 'idle';
+  } else {
+    if (!a.location) { alert('軍隊の位置が設定されていません。参謀本部で先に位置を設定してください。'); return; }
+    a.mode = 'defend';
+  }
+  renderArmies();
+}
+
+// ============================================================
+//  HQ
+// ============================================================
+function renderHQ() {
+  updateBadges();
+  ensureArmies();
+  const armies = myArmies();
+
+  const sel = document.getElementById('hq-army-select');
+  sel.innerHTML = '<option value="">-- 軍隊を選択 --</option>';
+  armies.units.forEach((a, i) => {
+    const opt = document.createElement('option');
+    opt.value = i;
+    opt.textContent = `${a.name}（${a.troops}名 / ${a.location ? NAMES[a.location] : '未配置'}）`;
+    sel.appendChild(opt);
+  });
+
+  renderHQOrders();
+  renderHQMap();
+}
+
+function onHqArmySelect() {
+  const idx = document.getElementById('hq-army-select').value;
+  hqSelectedArmyIdx = idx !== '' ? parseInt(idx) : null;
+  hqPath = [];
+  hqDefendTarget = null;
+  updateHQPathDisplay();
+  updateHQArmyInfo();
+  renderHQMap();
+}
+
+function updateHQArmyInfo() {
+  const el = document.getElementById('hq-army-info');
+  if (hqSelectedArmyIdx === null) { el.innerHTML = ''; return; }
+  ensureArmies();
+  const a = myArmies().units[hqSelectedArmyIdx];
+  const loc = a.location ? NAMES[a.location] : '未配置';
+  el.innerHTML = `兵力: ${a.troops}名　位置: ${loc}　行動力: ${a.ap}/50`;
+}
+
+function onOrderTypeChange() {
+  const t = document.getElementById('hq-order-type').value;
+  document.getElementById('hq-path-section').style.display = (t === 'defend') ? 'none' : 'block';
+  document.getElementById('hq-defend-section').style.display = (t === 'defend') ? 'block' : 'none';
+  hqPath = [];
+  hqDefendTarget = null;
+
+  if (t === 'defend' && hqSelectedArmyIdx !== null) {
+    ensureArmies();
+    const a = myArmies().units[hqSelectedArmyIdx];
+    if (a && a.location) {
+      hqDefendTarget = a.location;
+      document.getElementById('hq-defend-target').textContent = NAMES[a.location] + '（現在地）';
+    } else {
+      document.getElementById('hq-defend-target').textContent = '未配置 — 先に配置場所を設定してください';
+    }
+  }
+  updateHQPathDisplay();
+}
+
+function onHQMapClick(prefId) {
+  if (hqMapWasDragging) { hqMapWasDragging = false; return; }
+
+  // 諜報選択モード
+  if (hqSpyMode) {
+    if (gameState.territories[prefId] === myCountryId) return; // 自国は選べない
+    spyTargetPref = prefId;
+    hqSpyMode = false;
+    const selBtn = document.getElementById('spy-select-btn');
+    if (selBtn) { selBtn.textContent = '選択'; selBtn.style.background = ''; }
+    document.getElementById('spy-pref-display').textContent = NAMES[prefId] || prefId;
+    renderHQMap();
+    return;
+  }
+
+  if (hqSelectedArmyIdx === null) { alert('まず軍隊を選択してください'); return; }
+  const orderType = document.getElementById('hq-order-type').value;
+
+  if (orderType === 'defend') {
+    // 防衛は現在地を自動設定するため地図クリックは移動/攻撃と同じ扱い
+    return;
+  }
+
+  // move / attack: パスに追加（隣接チェック）
+  const lastPref = hqPath.length > 0 ? hqPath[hqPath.length - 1] : myArmies().units[hqSelectedArmyIdx].location;
+  if (!lastPref) {
+    // 位置未設定: 最初のクリックは自国領土
+    if (gameState.territories[prefId] !== myCountryId) {
+      alert('出発地は自国の領土を選択してください');
+      return;
+    }
+    myArmies().units[hqSelectedArmyIdx].location = prefId;
+    hqPath.push(prefId);
+  } else {
+    if (prefId === lastPref) return;
+    if (!(ADJACENCY[lastPref] || []).includes(prefId)) {
+      alert(`${NAMES[lastPref]}と${NAMES[prefId]}は隣接していません`);
+      return;
+    }
+    hqPath.push(prefId);
+  }
+  updateHQPathDisplay();
+  renderHQMap();
+}
+
+function calcAPCost(path) {
+  if (!path || path.length < 1) return 0;
+  // 現在地を先頭に追加してコストを計算
+  const a = hqSelectedArmyIdx !== null && myArmies() ? myArmies().units[hqSelectedArmyIdx] : null;
+  const fullPath = (a && a.location) ? [a.location, ...path] : path;
+  if (fullPath.length <= 1) return 0;
+  let ap = 0;
+  for (let i = 1; i < fullPath.length; i++) {
+    const isOwn = gameState.territories[fullPath[i]] === myCountryId;
+    ap += isOwn ? 5 : 20;
+  }
+  return ap;
+}
+
+function updateHQPathDisplay() {
+  const apCost = calcAPCost(hqPath);
+  const pct = Math.min(100, (apCost / 50) * 100);
+  const bar = document.getElementById('hq-ap-bar');
+  bar.style.width = pct + '%';
+  bar.className = 'ap-fill' + (pct >= 100 ? ' empty' : pct >= 60 ? ' low' : '');
+  document.getElementById('hq-ap-cost').textContent = apCost;
+
+  const pathEl = document.getElementById('hq-path-display');
+  if (!hqPath.length) { pathEl.textContent = '未設定（地図をクリックして経路を選択）'; return; }
+  const _a = hqSelectedArmyIdx !== null && myArmies() ? myArmies().units[hqSelectedArmyIdx] : null;
+  const displayPath = (_a && _a.location) ? [_a.location, ...hqPath] : hqPath;
+  pathEl.innerHTML = displayPath.map(p => NAMES[p]).join(' <span class="path-arrow">→</span> ');
+}
+
+function clearPath() {
+  hqPath = [];
+  hqDefendTarget = null;
+  updateHQPathDisplay();
+  renderHQMap();
+}
+
+function addOrder() {
+  if (hqSelectedArmyIdx === null) { alert('軍隊を選択してください'); return; }
+  ensureArmies();
+  const a = myArmies().units[hqSelectedArmyIdx];
+  const orderType = document.getElementById('hq-order-type').value;
+  const startTime = parseInt(document.getElementById('hq-start-time').value) || 0;
+
+  // 防衛中の軍隊は移動・攻撃不可
+  if (a.mode === 'defend' && orderType !== 'defend') {
+    alert(`${a.name}は防衛配置中です。移動・攻撃命令は出せません。\n軍隊処理ページで防衛を解除してください。`);
+    return;
+  }
+
+  // 1軍隊につき命令は1つまで
+  const existingOrder = (gameState.pendingOrders || []).find(
+    o => o.countryId === myCountryId && o.armyIdx === hqSelectedArmyIdx
+  );
+  if (existingOrder) {
+    alert(`${a.name}にはすでに命令が登録されています。先に削除してから追加してください。`);
+    return;
+  }
+
+  if (orderType === 'defend') {
+    if (!a.location) { alert('この軍隊はまだ配置されていません'); return; }
+    a.mode = 'defend';
+    addPendingOrder({ type: 'defend', armyId: a.id, armyIdx: hqSelectedArmyIdx, defenseAt: a.location, startTime });
+    hqDefendTarget = null;
+  } else {
+    if (hqPath.length < 1) { alert('移動先の県を地図から選択してください'); return; }
+    const apCost = calcAPCost(hqPath);
+    if (apCost > 50) { alert(`行動力が足りません（必要: ${apCost} / 最大: 50）`); return; }
+    const fullPath = a.location ? [a.location, ...hqPath] : [...hqPath];
+    a.mode = orderType === 'attack' ? 'attack' : 'move';
+    addPendingOrder({ type: orderType, armyId: a.id, armyIdx: hqSelectedArmyIdx, path: fullPath, startTime, apCost });
+    hqPath = [];
+  }
+
+  updateHQPathDisplay();
+  renderHQOrders();
+  renderHQMap();
+  updateHQArmyInfo();
+}
+
+function addPendingOrder(order) {
+  if (!gameState.pendingOrders) gameState.pendingOrders = [];
+  order.id = uid();
+  order.countryId = myCountryId;
+  order.turn = gameState.turn;
+  gameState.pendingOrders.push(order);
+}
+
+function removeOrder(orderId) {
+  if (!gameState.pendingOrders) return;
+  gameState.pendingOrders = gameState.pendingOrders.filter(o => o.id !== orderId);
+  renderHQOrders();
+  renderHQMap();
+}
+
+function clearAllOrders() {
+  if (!confirm('自国の命令を全て削除しますか？')) return;
+  if (!gameState.pendingOrders) return;
+  gameState.pendingOrders = gameState.pendingOrders.filter(o => o.countryId !== myCountryId);
+  renderHQOrders();
+  renderHQMap();
+}
+
+function startSpySelect() {
+  hqSpyMode = !hqSpyMode;
+  const btn = document.getElementById('spy-select-btn');
+  if (btn) { btn.textContent = hqSpyMode ? 'キャンセル' : '選択'; btn.style.background = hqSpyMode ? '#e76f51' : ''; }
+  if (!hqSpyMode) renderHQMap();
+}
+
+async function doSpyAction() {
+  if (!spyTargetPref) { alert('地図から諜報対象の県を選択してください'); return; }
+  const mySpyResults = (gameState.spyResults && gameState.spyResults[myCountryId]) || [];
+  if (mySpyResults.some(r => r.turn === gameState.turn)) { alert('このターンはすでに諜報を実行しました'); return; }
+
+  const btn = document.getElementById('spy-btn');
+  btn.disabled = true; btn.textContent = '処理中...';
+
+  if (!gameState.spyResults) gameState.spyResults = {};
+  if (!gameState.spyResults[myCountryId]) gameState.spyResults[myCountryId] = [];
+  if (!gameState.spyAlerts) gameState.spyAlerts = {};
+
+  const success = Math.random() < 0.25;
+  let resultText;
+
+  if (success) {
+    const armiesHere = [];
+    gameState.countries.forEach(c => {
+      if (c.id === myCountryId) return;
+      const ad = gameState.armies && gameState.armies[c.id];
+      if (!ad || !ad.units) return;
+      ad.units.forEach((u, idx) => {
+        if (u.location !== spyTargetPref) return;
+        let entry = `${c.name}の${u.name}（兵力${u.troops}）`;
+        const order = (gameState.pendingOrders || []).find(o => o.countryId === c.id && o.armyIdx === idx);
+        if (order) {
+          const tl = {move:'移動', attack:'攻撃', defend:'防衛'}[order.type] || order.type;
+          const dest = order.path ? NAMES[order.path[order.path.length - 1]] || order.path[order.path.length - 1] : '';
+          entry += `[${tl}${dest ? '→' + dest : ''}]`;
+        }
+        armiesHere.push(entry);
+      });
+    });
+    const ownerCid = gameState.territories[spyTargetPref];
+    const ownerName = ownerCid ? (gameState.countries.find(c => c.id === ownerCid) || {name:'不明'}).name : '中立';
+    resultText = armiesHere.length > 0
+      ? `${NAMES[spyTargetPref] || spyTargetPref}（${ownerName}）: ${armiesHere.join('、')}`
+      : `${NAMES[spyTargetPref] || spyTargetPref}（${ownerName}）: 敵軍なし`;
+
+    gameState.spyResults[myCountryId].unshift({ turn: gameState.turn, pref: spyTargetPref, text: resultText });
+
+    // 50% 発覚
+    if (Math.random() < 0.5 && ownerCid && ownerCid !== myCountryId) {
+      if (!gameState.spyAlerts[ownerCid]) gameState.spyAlerts[ownerCid] = [];
+      gameState.spyAlerts[ownerCid].unshift({ turn: gameState.turn, text: `${NAMES[spyTargetPref] || spyTargetPref}に諜報員の侵入痕跡が発見されました（国不明）` });
+      if (gameState.spyAlerts[ownerCid].length > 10) gameState.spyAlerts[ownerCid].pop();
+    }
+    alert(`諜報成功！\n${resultText}`);
+  } else {
+    resultText = `${NAMES[spyTargetPref] || spyTargetPref}への諜報は失敗`;
+    gameState.spyResults[myCountryId].unshift({ turn: gameState.turn, pref: spyTargetPref, text: resultText, failed: true });
+  }
+  if (gameState.spyResults[myCountryId].length > 20) gameState.spyResults[myCountryId].pop();
+
+  spyTargetPref = null;
+  document.getElementById('spy-pref-display').textContent = '地図から選択';
+
+  // Firebaseに即時保存
+  try { await GAME_REF.set(gameState); } catch(e) { console.error('spy save failed', e); }
+
+  updateSpyUI();
+  renderHQMap();
+  if (!success) alert('諜報失敗');
+}
+
+function updateSpyUI() {
+  const btn = document.getElementById('spy-btn');
+  const mySpyResults = (gameState.spyResults && gameState.spyResults[myCountryId]) || [];
+  const usedThisTurn = mySpyResults.some(r => r.turn === gameState.turn);
+  if (btn) { btn.disabled = usedThisTurn; btn.textContent = usedThisTurn ? '実行済み' : '諜報実行'; }
+
+  const resultsEl = document.getElementById('spy-results');
+  if (!resultsEl) return;
+  const results = (gameState.spyResults && gameState.spyResults[myCountryId]) || [];
+  const alerts  = (gameState.spyAlerts  && gameState.spyAlerts[myCountryId])  || [];
+  let html = '';
+  alerts.forEach(a => { html += `<div style="color:#f4a261;padding:2px 0;border-bottom:1px solid #1a3d2e;">T${a.turn}: ${a.text}</div>`; });
+  results.slice(0, 5).forEach(r => {
+    const col = r.failed ? '#888' : '#95d5b2';
+    html += `<div style="color:${col};padding:2px 0;border-bottom:1px solid #1a3d2e;">T${r.turn}: ${r.text}</div>`;
+  });
+  resultsEl.innerHTML = html || '<span style="color:#555;">諜報結果なし</span>';
+}
+
+function renderHQOrders() {
+  const el = document.getElementById('hq-order-list');
+  const orders = (gameState.pendingOrders || []).filter(o => o.countryId === myCountryId);
+  if (!orders.length) {
+    el.innerHTML = '<div style="color:#555;font-size:12px;padding:4px;">命令がありません</div>';
+    return;
+  }
+  el.innerHTML = orders.map(o => {
+    const typeLabel = { move:'移動', defend:'防衛', attack:'攻撃' }[o.type] || o.type;
+    const typeClass = { move:'ot-move', defend:'ot-defend', attack:'ot-attack' }[o.type] || '';
+    ensureArmies();
+    const a = myArmies().units[o.armyIdx];
+    const armyName = a ? a.name : '(不明)';
+    let detail = '';
+    if (o.type === 'defend') {
+      detail = `防衛先: ${NAMES[o.defenseAt] || o.defenseAt}`;
+    } else {
+      detail = (o.path || []).map(p => NAMES[p]).join(' → ');
+    }
+    return `<div class="order-card">
+      <div class="order-card-header">
+        <span class="order-type-badge ${typeClass}">${typeLabel}</span>
+        <span style="font-size:12px;flex:1;">${armyName}</span>
+        <button class="btn btn-sm btn-dark" onclick="removeOrder('${o.id}')">×</button>
+      </div>
+      <div class="path-display">${detail}</div>
+      <div style="font-size:11px;color:#666;margin-top:2px;">開始: ${o.startTime}単位時間後${o.apCost ? ` / AP: ${o.apCost}` : ''}</div>
+    </div>`;
+  }).join('');
+}
+
+// ============================================================
+//  HQ MAP
+// ============================================================
+function renderHQMap() {
+  if (!hqMapReady) {
+    initHQMap();
+    return;
+  }
+  const c = myCountry();
+  const myOrders = (gameState.pendingOrders || []).filter(o => o.countryId === myCountryId);
+
+  PREFS.forEach(id => {
+    const g = document.getElementById('hq_' + id + '_group');
+    if (!g) return;
+    const cid = gameState.territories && gameState.territories[id];
+    const country = cid ? gameState.countries.find(x => x.id === cid) : null;
+    let fill = country ? country.color : '#c8c8c8';
+    // 諜報選択モード: 自国の県はグレーアウト
+    if (hqSpyMode && cid === myCountryId) fill = '#555';
+    if (id === spyTargetPref) fill = '#f4a261';
+    g.querySelectorAll('path,polygon,rect,circle').forEach(el => el.style.fill = fill);
+    g.classList.remove('in-path', 'army-here', 'enemy-here');
+
+    if (hqPath.includes(id)) g.classList.add('in-path');
+    if (hqDefendTarget === id) g.classList.add('in-path');
+  });
+
+  updateArmyMarkers();
+  updateSpyUI();
+}
+
+function updateArmyMarkers() {
+  if (!hqMapReady) return;
+  const svg = document.querySelector('#hq-map-container svg');
+  if (!svg || !gameState || !gameState.countries) return;
+
+  let markersG = svg.querySelector('#hq-army-markers');
+  if (!markersG) {
+    markersG = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+    markersG.id = 'hq-army-markers';
+    svg.appendChild(markersG);
+  }
+  markersG.innerHTML = '';
+
+  const svgRect = svg.getBoundingClientRect();
+  const vb = svg.viewBox.baseVal;
+  if (!vb || svgRect.width === 0) return;
+
+  // preserveAspectRatio="xMinYMin meet" に基づくスケール
+  // ズーム・パン後も getBoundingClientRect は実スクリーン座標を返すため、
+  // 両方同じ変換を受けており相対計算で正しいSVG座標が出る
+  const scale = Math.min(svgRect.width / vb.width, svgRect.height / vb.height);
+
+  // 諜報で判明した県セット
+  const revealedPrefs = new Set();
+  const spyResults = gameState.spyResults && gameState.spyResults[myCountryId] ? gameState.spyResults[myCountryId] : [];
+  spyResults.forEach(r => { if (r.pref) revealedPrefs.add(r.pref); });
+
+  const byLocation = {};
+  gameState.countries.forEach(country => {
+    const isMine = country.id === myCountryId;
+    const ad = gameState.armies && gameState.armies[country.id];
+    if (!ad || !ad.units) return;
+    ad.units.forEach((army, idx) => {
+      if (!army.location) return;
+      // 自国のみ、または諜報で発見済みの県の敵軍を表示
+      if (!isMine && !revealedPrefs.has(army.location)) return;
+      if (!byLocation[army.location]) byLocation[army.location] = [];
+      byLocation[army.location].push({ country, army, armyIdx: idx, isMine });
+    });
+  });
+
+  Object.entries(byLocation).forEach(([prefId, entries]) => {
+    const g = document.getElementById('hq_' + prefId + '_group');
+    if (!g) return;
+
+    const gRect = g.getBoundingClientRect();
+    const cx = (gRect.left + gRect.width  / 2 - svgRect.left) / scale + vb.x;
+    const cy = (gRect.top  + gRect.height / 2 - svgRect.top)  / scale + vb.y;
+    const count = entries.length;
+
+    entries.forEach(({ country, army, armyIdx, isMine }, i) => {
+      const offsetX = count > 1 ? (i - (count - 1) / 2) * 7 : 0;
+      const isSelected = (isMine && armyIdx === hqSelectedArmyIdx);
+      const r = isSelected ? 4.5 : 3;
+
+      const circle = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+      circle.setAttribute('cx', cx + offsetX);
+      circle.setAttribute('cy', cy);
+      circle.setAttribute('r', r);
+      circle.setAttribute('fill', country.color);
+      circle.setAttribute('stroke', isSelected ? '#fff' : '#222');
+      circle.setAttribute('stroke-width', isSelected ? '1.2' : '0.6');
+      circle.style.pointerEvents = 'none';
+      markersG.appendChild(circle);
+
+      const label = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+      label.setAttribute('x', cx + offsetX);
+      label.setAttribute('y', cy + 2.5);
+      label.setAttribute('text-anchor', 'middle');
+      label.setAttribute('font-size', '3');
+      label.setAttribute('fill', '#fff');
+      label.setAttribute('font-weight', 'bold');
+      label.setAttribute('pointer-events', 'none');
+      label.textContent = armyIdx + 1;
+      markersG.appendChild(label);
+
+      if (army.mode === 'defend') {
+        const def = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+        def.setAttribute('x', cx + offsetX + r);
+        def.setAttribute('y', cy - r + 1);
+        def.setAttribute('font-size', '3');
+        def.setAttribute('fill', '#a8dadc');
+        def.setAttribute('pointer-events', 'none');
+        def.textContent = '防';
+        markersG.appendChild(def);
+      }
+    });
+  });
+}
+
+async function initHQMap() {
+  try {
+    const txt = (typeof MAP_SVG_CONTENT !== 'undefined')
+      ? (typeof MAP_SVG_CONTENT === 'object' ? MAP_SVG_CONTENT.value : MAP_SVG_CONTENT)
+      : await fetch('MapChart_Map.svg').then(r => r.text());
+
+    const container = document.getElementById('hq-map-container');
+    container.innerHTML = txt;
+    const svg = container.querySelector('svg');
+    if (svg) {
+      svg.style.width = '100%'; svg.style.height = '100%';
+      svg.style.backgroundColor = '#1a1a2e';
+      svg.removeAttribute('width'); svg.removeAttribute('height');
+
+      // IDをhq_プレフィックスつきに変更してadmin側と衝突しないようにする
+      svg.querySelectorAll('[id]').forEach(el => {
+        el.id = 'hq_' + el.id;
+      });
+    }
+    hqMapReady = true;
+
+    PREFS.forEach(id => {
+      const g = document.getElementById('hq_' + id + '_group');
+      if (!g) return;
+      g.classList.add('pref-group');
+      g.addEventListener('click', () => onHQMapClick(id));
+      g.addEventListener('mouseenter', () => showHQTip(id));
+      g.addEventListener('mouseleave', hideHQTip);
+    });
+    renderHQMap();
+  } catch (e) {
+    document.getElementById('hq-map-container').innerHTML =
+      `<div style="color:#e94560;padding:20px">地図読み込み失敗: ${e.message}</div>`;
+  }
+}
+
+const hqTooltip = document.getElementById('hq-tooltip');
+document.addEventListener('mousemove', e => {
+  hqTooltip.style.left = (e.clientX + 12) + 'px';
+  hqTooltip.style.top = (e.clientY - 8) + 'px';
+});
+function showHQTip(prefId) {
+  const cid = gameState && gameState.territories && gameState.territories[prefId];
+  const country = cid ? gameState.countries.find(x => x.id === cid) : null;
+  const ownLabel = cid === myCountryId ? '（自国）' : '';
+  hqTooltip.style.display = 'block';
+  hqTooltip.textContent = NAMES[prefId] + (country ? ` — ${country.name}${ownLabel}` : ' — 未割当');
+}
+function hideHQTip() { hqTooltip.style.display = 'none'; }
+
+// ============================================================
+//  SETTINGS
+// ============================================================
+function renderSettings() {
+  updateBadges();
+  const c = myCountry();
+  if (!c) return;
+  document.getElementById('settings-color').value = c.color;
+}
+
+function saveSettings() {
+  const c = myCountry();
+  if (!c) return;
+  const newColor = document.getElementById('settings-color').value;
+  const newPw = document.getElementById('settings-new-pw').value;
+  const confirmPw = document.getElementById('settings-confirm-pw').value;
+  const msgEl = document.getElementById('settings-msg');
+
+  c.color = newColor;
+
+  if (newPw) {
+    if (newPw !== confirmPw) { msgEl.textContent = 'パスワードが一致しません'; msgEl.style.color = '#e94560'; return; }
+    c.password = newPw;
+  }
+
+  msgEl.textContent = '保存しました（Gistへの書き込みも忘れずに）';
+  msgEl.style.color = '#57cc99';
+  updateBadges();
+}
+
+// ============================================================
+//  HQ地図 ズーム・パン
+// ============================================================
+function applyHQTransform() {
+  const c = document.getElementById('hq-map-container');
+  if (c) c.style.transform = `translate(${hqPanX}px,${hqPanY}px) scale(${hqZoomScale})`;
+}
+
+function hqZoomAt(cx, cy, factor) {
+  const newScale = Math.max(0.5, Math.min(12, hqZoomScale * factor));
+  hqPanX = cx - (cx - hqPanX) * (newScale / hqZoomScale);
+  hqPanY = cy - (cy - hqPanY) * (newScale / hqZoomScale);
+  hqZoomScale = newScale;
+  applyHQTransform();
+}
+
+function hqZoomIn() {
+  const m = document.getElementById('hq-map');
+  const r = m.getBoundingClientRect();
+  hqZoomAt(r.width / 2, r.height / 2, 1.3);
+}
+
+function hqZoomOut() {
+  const m = document.getElementById('hq-map');
+  const r = m.getBoundingClientRect();
+  hqZoomAt(r.width / 2, r.height / 2, 1 / 1.3);
+}
+
+function hqZoomReset() {
+  hqZoomScale = 1; hqPanX = 0; hqPanY = 0;
+  applyHQTransform();
+}
+
+// ============================================================
+//  初期化
+// ============================================================
+window.addEventListener('load', () => {
+  autoLoadGist();
+  setupHQMapEvents();
+});
+
+function setupHQMapEvents() {
+  const mapEl = document.getElementById('hq-map');
+  let isDragging = false, dragStartX = 0, dragStartY = 0, originPanX = 0, originPanY = 0;
+  let lastPinchDist = 0;
+
+  mapEl.addEventListener('wheel', e => {
+    e.preventDefault();
+    const rect = mapEl.getBoundingClientRect();
+    hqZoomAt(e.clientX - rect.left, e.clientY - rect.top, e.deltaY < 0 ? 1.15 : 1 / 1.15);
+  }, { passive: false });
+
+  mapEl.addEventListener('mousedown', e => {
+    isDragging = true; hqMapWasDragging = false;
+    dragStartX = e.clientX; dragStartY = e.clientY;
+    originPanX = hqPanX; originPanY = hqPanY;
+  });
+
+  document.addEventListener('mousemove', e => {
+    if (!isDragging) return;
+    if (Math.abs(e.clientX - dragStartX) > 4 || Math.abs(e.clientY - dragStartY) > 4) {
+      hqMapWasDragging = true;
+    }
+    hqPanX = originPanX + (e.clientX - dragStartX);
+    hqPanY = originPanY + (e.clientY - dragStartY);
+    applyHQTransform();
+  });
+
+  document.addEventListener('mouseup', () => { isDragging = false; });
+
+  mapEl.addEventListener('touchstart', e => {
+    if (e.touches.length === 2) {
+      const dx = e.touches[0].clientX - e.touches[1].clientX;
+      const dy = e.touches[0].clientY - e.touches[1].clientY;
+      lastPinchDist = Math.hypot(dx, dy);
+      isDragging = false;
+    } else if (e.touches.length === 1) {
+      isDragging = true; hqMapWasDragging = false;
+      dragStartX = e.touches[0].clientX; dragStartY = e.touches[0].clientY;
+      originPanX = hqPanX; originPanY = hqPanY;
+    }
+  }, { passive: true });
+
+  mapEl.addEventListener('touchmove', e => {
+    e.preventDefault();
+    if (e.touches.length === 2) {
+      const dx = e.touches[0].clientX - e.touches[1].clientX;
+      const dy = e.touches[0].clientY - e.touches[1].clientY;
+      const dist = Math.hypot(dx, dy);
+      if (lastPinchDist > 0) {
+        const rect = mapEl.getBoundingClientRect();
+        const cx = (e.touches[0].clientX + e.touches[1].clientX) / 2 - rect.left;
+        const cy = (e.touches[0].clientY + e.touches[1].clientY) / 2 - rect.top;
+        hqZoomAt(cx, cy, dist / lastPinchDist);
+      }
+      lastPinchDist = dist;
+    } else if (e.touches.length === 1 && isDragging) {
+      if (Math.abs(e.touches[0].clientX - dragStartX) > 4 || Math.abs(e.touches[0].clientY - dragStartY) > 4) {
+        hqMapWasDragging = true;
+      }
+      hqPanX = originPanX + (e.touches[0].clientX - dragStartX);
+      hqPanY = originPanY + (e.touches[0].clientY - dragStartY);
+      applyHQTransform();
+    }
+  }, { passive: false });
+
+  mapEl.addEventListener('touchend', e => {
+    if (e.touches.length < 2) lastPinchDist = 0;
+    if (e.touches.length === 0) isDragging = false;
+  });
+}
+</script>
+</body>
+</html>
