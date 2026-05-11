@@ -244,6 +244,7 @@
       <div id="sidebar-tabs">
         <div class="stab active" onclick="showTab('territory')" id="tab-territory">領土設定</div>
         <div class="stab" onclick="showTab('countries')" id="tab-countries">国一覧</div>
+        <div class="stab" onclick="showTab('edit')" id="tab-edit">データ編集</div>
         <div class="stab" onclick="showTab('sync')" id="tab-sync">同期</div>
         <div class="stab" onclick="showTab('log')" id="tab-log">ログ</div>
         <div class="stab" onclick="showTab('process')" id="tab-process">処理</div>
@@ -281,6 +282,47 @@
         <div class="section" style="flex:1;min-height:0;">
           <h2>国一覧</h2>
           <div id="country-list"></div>
+        </div>
+      </div>
+
+      <!-- データ編集 タブ -->
+      <div class="tab-panel" id="panel-edit">
+        <div class="section">
+          <h2>国を選択</h2>
+          <select class="field-input" id="edit-country-select" onchange="renderEditPanel()">
+            <option value="">-- 国を選択 --</option>
+          </select>
+        </div>
+        <div id="edit-country-detail" style="display:none;">
+          <!-- 国の基本情報 -->
+          <div class="section">
+            <h2>国の基本情報</h2>
+            <div style="display:flex;flex-direction:column;gap:6px;">
+              <div>
+                <label style="font-size:10px;color:#888;">国名</label>
+                <input type="text" class="field-input" id="edit-country-name" placeholder="国名" />
+              </div>
+              <div style="display:flex;gap:6px;align-items:center;">
+                <label style="font-size:10px;color:#888;white-space:nowrap;">旗色:</label>
+                <input type="color" id="edit-country-color" style="width:36px;height:28px;border:none;cursor:pointer;border-radius:4px;padding:2px;" />
+                <input type="text" class="field-input" id="edit-country-pw" placeholder="パスワード（変更する場合）" style="flex:1;" />
+              </div>
+              <button class="btn btn-blue btn-full btn-sm" onclick="saveCountryBasic()">国情報を保存</button>
+            </div>
+          </div>
+          <!-- 予備兵力 -->
+          <div class="section">
+            <h2>予備兵力</h2>
+            <div style="display:flex;gap:6px;align-items:center;">
+              <input type="number" class="field-input" id="edit-reserve" min="0" placeholder="0" style="flex:1;" />
+              <button class="btn btn-sm btn-blue" onclick="saveReserve()">更新</button>
+            </div>
+          </div>
+          <!-- 軍隊編集 -->
+          <div class="section" style="flex:1;min-height:0;">
+            <h2>軍隊データ</h2>
+            <div id="edit-army-list" style="display:flex;flex-direction:column;gap:8px;overflow-y:auto;"></div>
+          </div>
         </div>
       </div>
 
@@ -383,6 +425,7 @@ const FIREBASE_CONFIG = {
 };
 firebase.initializeApp(FIREBASE_CONFIG);
 const GAME_REF = firebase.database().ref('gamestate');
+const ADJ_REF  = firebase.database().ref('adjacency');
 
 // ============================================================
 //  定数
@@ -405,7 +448,8 @@ const NAMES = {
 };
 const PREFS = Object.keys(NAMES);
 
-const ADJACENCY = {
+// Firebaseから読み込む。未取得時は日本地図のデフォルト値を使用
+let ADJACENCY = {
   Hokkaido:["Aomori"],Aomori:["Hokkaido","Iwate","Akita"],Iwate:["Aomori","Akita","Miyagi","Yamagata"],
   Akita:["Aomori","Iwate","Miyagi","Yamagata"],Miyagi:["Iwate","Akita","Yamagata","Fukushima"],
   Yamagata:["Akita","Iwate","Miyagi","Fukushima","Niigata"],
@@ -493,6 +537,7 @@ function showTab(name) {
   currentTab = name;
   if (name === 'process') updateProcessPanel();
   if (name === 'territory') renderMiniList();
+  if (name === 'edit') { populateEditSelect(); renderEditPanel(); }
 }
 
 // ============================================================
@@ -728,18 +773,24 @@ function shouldRetreat(state) {
   return Math.random() < Math.max(0, (lossRate - 0.25) * 1.2);
 }
 
-function retreatDest(state) {
+function retreatDest(state, states) {
   const adj = ADJACENCY[state.location] || [];
-  const friendly = adj.filter(p => gameState.territories[p] === state.countryId);
+  const friendly = adj.filter(p => {
+    if (gameState.territories[p] !== state.countryId) return false;
+    // 撤退先に敵軍がいる場合は撤退不可
+    return !Object.values(states).some(s =>
+      s.countryId !== state.countryId && s.location === p && !s.eliminated
+    );
+  });
   return friendly.length ? friendly[Math.floor(Math.random() * friendly.length)] : null;
 }
 
-function finalizeBattle(battle, winner, loser, log) {
+function finalizeBattle(battle, winner, loser, log, states) {
   battle.resolved = true;
   winner.inBattle = null;
   loser.inBattle = null;
 
-  const retreat = retreatDest(loser);
+  const retreat = retreatDest(loser, states);
 
   if (loser.troops <= 0) {
     loser.eliminated = true;
@@ -843,11 +894,11 @@ async function processTurn() {
     st.mode = 'defend'; st.location = order.defenseAt;
   });
 
-  // 4. 時間単位シミュレーション（0〜45、5刻み）
+  // 4. 時間単位シミュレーション（0〜45、1刻み）
   status.textContent = '時間シミュレーション処理中...';
   const battles = [];
 
-  for (let t = 0; t <= 45; t += 5) {
+  for (let t = 0; t <= 45; t++) {
     // この時間に開始する移動・攻撃命令を起動
     turnOrders.filter(o => o.startTime === t && o.type !== 'defend').forEach(order => {
       const st = Object.values(states).find(s => s.id === order.armyId);
@@ -885,7 +936,7 @@ async function processTurn() {
         (s.activeOrder.path[s.pathStep + 1] === from)
       );
       if (counter) {
-        army.ap -= 5; counter.ap -= 5;
+        army.ap -= 1; counter.ap -= 1;
         army.pathStep = nextStep; army.location = to;
         counter.pathStep++; counter.location = from;
         const bid = uid();
@@ -910,7 +961,7 @@ async function processTurn() {
         !s.inBattle && !s.eliminated
       );
       if (defender) {
-        army.ap -= 5; defender.ap -= 5;
+        army.ap -= 1; defender.ap -= 1;
         army.pathStep = nextStep; army.location = to;
         const bid = uid();
         const b = {
@@ -934,7 +985,7 @@ async function processTurn() {
         !s.inBattle && !s.eliminated
       );
       if (idleEnemy) {
-        army.ap -= 5; idleEnemy.ap -= 5;
+        army.ap -= 1; idleEnemy.ap -= 1;
         army.pathStep = nextStep; army.location = to;
         const bid = uid();
         const b = {
@@ -965,47 +1016,65 @@ async function processTurn() {
 
     // 継続中の戦闘を1単位時間分処理
     for (const b of battles.filter(x => !x.resolved)) {
-      if (b.atk.troops <= 0) { finalizeBattle(b, b.def, b.atk, log); continue; }
-      if (b.def.troops <= 0) { finalizeBattle(b, b.atk, b.def, log); continue; }
-      if (b.atk.ap < 5) { finalizeBattle(b, b.def, b.atk, log); continue; }
-      if (b.def.ap < 5) { finalizeBattle(b, b.atk, b.def, log); continue; }
+      if (b.atk.troops <= 0) { finalizeBattle(b, b.def, b.atk, log, states); continue; }
+      if (b.def.troops <= 0) { finalizeBattle(b, b.atk, b.def, log, states); continue; }
+      if (b.atk.ap < 1) { finalizeBattle(b, b.def, b.atk, log, states); continue; }
+      if (b.def.ap < 1) { finalizeBattle(b, b.atk, b.def, log, states); continue; }
 
-      b.atk.ap -= 5; b.def.ap -= 5;
+      b.atk.ap -= 1; b.def.ap -= 1;
 
-      // 戦闘中イベント（15%の確率）
-      if (Math.random() < 0.15) {
-        const ev = Math.random();
+      // 戦闘中イベント（20%の確率）
+      if (Math.random() < 0.20) {
+        const evRoll = Math.floor(Math.random() * 6);
         const side = Math.random() < 0.5 ? b.atk : b.def;
         const other = side === b.atk ? b.def : b.atk;
-        if (ev < 0.33) {
-          const bonus = Math.ceil(other.troops * 0.10);
+        if (evRoll === 0) {
+          // 勇猛突撃
+          const bonus = Math.ceil(other.troops * 0.12);
           const selfLoss = Math.ceil(side.troops * 0.05);
           other.troops = Math.max(0, other.troops - bonus);
           side.troops = Math.max(0, side.troops - selfLoss);
-          log.push({ type: 'event', text: `[戦闘イベント T=${t}] ${cname(side.countryId)}の${getUnitName(side)}が勇猛果敢に突撃！${cname(other.countryId)}: -${bonus}名、${cname(side.countryId)}: -${selfLoss}名` });
-        } else if (ev < 0.66) {
+          log.push({ type: 'event', text: `[戦闘イベント T=${t}] ${cname(side.countryId)}の${getUnitName(side)}が勇猛果敢に突撃！${cname(other.countryId)}: -${bonus}名の損害、${cname(side.countryId)}も-${selfLoss}名` });
+        } else if (evRoll === 1) {
+          // 奇襲成功
           const apLoss = 10;
-          const bonusDmg = Math.ceil(other.troops * 0.05);
+          const bonusDmg = Math.ceil(other.troops * 0.07);
           other.ap = Math.max(0, other.ap - apLoss);
           other.troops = Math.max(0, other.troops - bonusDmg);
-          log.push({ type: 'event', text: `[戦闘イベント T=${t}] ${cname(side.countryId)}の${getUnitName(side)}の奇襲成功！${cname(other.countryId)}: AP-${apLoss}、兵力-${bonusDmg}名` });
-        } else {
-          const healed = Math.ceil(side.troops * 0.05);
+          log.push({ type: 'event', text: `[戦闘イベント T=${t}] ${cname(side.countryId)}の${getUnitName(side)}が夜陰に乗じた奇襲攻撃！${cname(other.countryId)}: 行動力-${apLoss}、兵力-${bonusDmg}名` });
+        } else if (evRoll === 2) {
+          // 士気高揚・回復
+          const healed = Math.ceil(side.troops * 0.08);
           side.troops += healed;
-          log.push({ type: 'event', text: `[戦闘イベント T=${t}] ${cname(side.countryId)}の${getUnitName(side)}が士気を立て直した！+${healed}名回復` });
+          log.push({ type: 'event', text: `[戦闘イベント T=${t}] ${cname(side.countryId)}の${getUnitName(side)}が鼓舞で士気高揚！兵力+${healed}名回復` });
+        } else if (evRoll === 3) {
+          // 精密砲撃
+          const artDmg = Math.ceil(other.troops * 0.15);
+          other.troops = Math.max(0, other.troops - artDmg);
+          log.push({ type: 'event', text: `[戦闘イベント T=${t}] ${cname(side.countryId)}の${getUnitName(side)}が精密砲撃を実施！${cname(other.countryId)}: -${artDmg}名の大損害！` });
+        } else if (evRoll === 4) {
+          // 補給線遮断
+          const apCut = 15;
+          other.ap = Math.max(0, other.ap - apCut);
+          log.push({ type: 'event', text: `[戦闘イベント T=${t}] ${cname(side.countryId)}の${getUnitName(side)}が補給線を遮断！${cname(other.countryId)}の行動力-${apCut}` });
+        } else {
+          // 逃亡兵発生
+          const desertion = Math.ceil(side.troops * 0.08);
+          side.troops = Math.max(0, side.troops - desertion);
+          log.push({ type: 'event', text: `[戦闘イベント T=${t}] ${cname(side.countryId)}の${getUnitName(side)}に逃亡兵発生！-${desertion}名が離散` });
         }
-        if (b.atk.troops <= 0) { finalizeBattle(b, b.def, b.atk, log); continue; }
-        if (b.def.troops <= 0) { finalizeBattle(b, b.atk, b.def, log); continue; }
+        if (b.atk.troops <= 0) { finalizeBattle(b, b.def, b.atk, log, states); continue; }
+        if (b.def.troops <= 0) { finalizeBattle(b, b.atk, b.def, log, states); continue; }
       }
 
       const { ac, dc } = doCombatStep(b.atk, b.def, b.isDefensive);
       b.atk.troops -= ac; b.def.troops -= dc;
-      log.push({ type: 'battle', text: `[T=${t} ${b.displayLoc}] ${cname(b.atk.countryId)}の${getUnitName(b.atk)}: -${ac}（残${b.atk.troops}） / ${cname(b.def.countryId)}の${getUnitName(b.def)}: -${dc}（残${b.def.troops}）` });
+      log.push({ type: 'battle', text: `[T=${t} ${b.displayLoc}] ${cname(b.atk.countryId)}の${getUnitName(b.atk)}: -${ac}（残${b.atk.troops}名） / ${cname(b.def.countryId)}の${getUnitName(b.def)}: -${dc}（残${b.def.troops}名）` });
 
-      if (b.atk.troops <= 0) { finalizeBattle(b, b.def, b.atk, log); continue; }
-      if (b.def.troops <= 0) { finalizeBattle(b, b.atk, b.def, log); continue; }
-      if (shouldRetreat(b.def)) { finalizeBattle(b, b.atk, b.def, log); continue; }
-      if (shouldRetreat(b.atk)) { finalizeBattle(b, b.def, b.atk, log); continue; }
+      if (b.atk.troops <= 0) { finalizeBattle(b, b.def, b.atk, log, states); continue; }
+      if (b.def.troops <= 0) { finalizeBattle(b, b.atk, b.def, log, states); continue; }
+      if (shouldRetreat(b.def)) { finalizeBattle(b, b.atk, b.def, log, states); continue; }
+      if (shouldRetreat(b.atk)) { finalizeBattle(b, b.def, b.atk, log, states); continue; }
     }
 
     await sleep(20);
@@ -1013,8 +1082,8 @@ async function processTurn() {
 
   // 5. ターン終了時に未決着の戦闘を兵力差で裁定
   for (const b of battles.filter(x => !x.resolved)) {
-    if (b.atk.troops >= b.def.troops) finalizeBattle(b, b.atk, b.def, log);
-    else finalizeBattle(b, b.def, b.atk, log);
+    if (b.atk.troops >= b.def.troops) finalizeBattle(b, b.atk, b.def, log, states);
+    else finalizeBattle(b, b.def, b.atk, log, states);
   }
 
   // 6. 軍隊状態をゲームデータへ反映
@@ -1029,12 +1098,13 @@ async function processTurn() {
     u.specialUnits = st.specialUnits;
   });
 
-  // 7. 兵士収入
+  // 7. 兵士収入（1ステート = 5名）
   gameState.countries.forEach(c => {
     const cnt = Object.values(gameState.territories).filter(t => t === c.id).length;
     if (!gameState.armies[c.id]) gameState.armies[c.id] = { reserve: 0, units: initArmies(c.id) };
-    gameState.armies[c.id].reserve = (gameState.armies[c.id].reserve || 0) + cnt;
-    log.push({ type: 'info', text: `${c.name}が${cnt}の兵士を獲得（予備: ${gameState.armies[c.id].reserve}名）` });
+    const income = cnt * 5;
+    gameState.armies[c.id].reserve = (gameState.armies[c.id].reserve || 0) + income;
+    log.push({ type: 'info', text: `${c.name}が${income}名の兵士を獲得（${cnt}県 × 5名 / 予備: ${gameState.armies[c.id].reserve}名）` });
   });
 
   // 8. 処理済み命令を削除
@@ -1103,7 +1173,7 @@ function updateProcessPanel() {
   const preview = document.getElementById('income-preview');
   preview.innerHTML = gameState.countries.map(c => {
     const cnt = Object.values(gameState.territories).filter(t => t === c.id).length;
-    return `<span style="color:${c.color}">■</span> ${c.name}: +${cnt}兵`;
+    return `<span style="color:${c.color}">■</span> ${c.name}: +${cnt * 5}兵（${cnt}県）`;
   }).join('<br>') || '<span style="color:#555">国がありません</span>';
 }
 
@@ -1201,6 +1271,133 @@ function updateAllUI() {
   updateTerritoryStats();
   renderLog();
   if (currentTab === 'process') updateProcessPanel();
+  if (currentTab === 'edit') { populateEditSelect(); renderEditPanel(); }
+}
+
+// ============================================================
+//  データ編集
+// ============================================================
+function populateEditSelect() {
+  const sel = document.getElementById('edit-country-select');
+  if (!sel) return;
+  const prev = sel.value;
+  sel.innerHTML = '<option value="">-- 国を選択 --</option>';
+  gameState.countries.forEach(c => {
+    const opt = document.createElement('option');
+    opt.value = c.id;
+    opt.textContent = c.name;
+    sel.appendChild(opt);
+  });
+  if (prev) sel.value = prev;
+}
+
+function renderEditPanel() {
+  const cid = document.getElementById('edit-country-select').value;
+  const detail = document.getElementById('edit-country-detail');
+  if (!cid) { detail.style.display = 'none'; return; }
+  detail.style.display = 'block';
+
+  const c = gameState.countries.find(x => x.id === cid);
+  if (!c) return;
+
+  document.getElementById('edit-country-name').value = c.name;
+  document.getElementById('edit-country-color').value = c.color || '#e63946';
+  document.getElementById('edit-country-pw').value = '';
+
+  const armies = gameState.armies && gameState.armies[cid];
+  document.getElementById('edit-reserve').value = armies ? (armies.reserve || 0) : 0;
+
+  renderEditArmyList(cid);
+}
+
+function renderEditArmyList(cid) {
+  const el = document.getElementById('edit-army-list');
+  const armies = gameState.armies && gameState.armies[cid];
+  if (!armies || !armies.units) {
+    el.innerHTML = '<div style="color:#555;font-size:12px;">軍隊データなし（ゲーム開始後に生成されます）</div>';
+    return;
+  }
+
+  const prefOptions = '<option value="">未配置</option>' +
+    PREFS.map(p => `<option value="${p}">${NAMES[p]}</option>`).join('');
+
+  el.innerHTML = armies.units.map((u, i) => `
+    <div style="background:#0f3460;border-radius:6px;padding:8px 10px;">
+      <div style="font-size:11px;font-weight:bold;color:#a8dadc;margin-bottom:6px;">${u.name}</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:5px;margin-bottom:6px;">
+        <div>
+          <label style="font-size:10px;color:#888;">部隊名</label>
+          <input type="text" class="field-input" id="edit-army-name-${i}" value="${u.name}" style="font-size:12px;padding:4px 6px;" />
+        </div>
+        <div>
+          <label style="font-size:10px;color:#888;">兵力</label>
+          <input type="number" class="field-input" id="edit-army-troops-${i}" value="${u.troops || 0}" min="0" style="font-size:12px;padding:4px 6px;" />
+        </div>
+        <div>
+          <label style="font-size:10px;color:#888;">位置</label>
+          <select class="field-input" id="edit-army-loc-${i}" style="font-size:12px;padding:4px 6px;">
+            ${armies.units[i].location
+              ? prefOptions.replace(`value="${armies.units[i].location}"`, `value="${armies.units[i].location}" selected`)
+              : prefOptions}
+          </select>
+        </div>
+        <div>
+          <label style="font-size:10px;color:#888;">行動力(AP)</label>
+          <input type="number" class="field-input" id="edit-army-ap-${i}" value="${u.ap !== undefined ? u.ap : 50}" min="0" max="50" style="font-size:12px;padding:4px 6px;" />
+        </div>
+        <div style="grid-column:1/-1;">
+          <label style="font-size:10px;color:#888;">モード</label>
+          <select class="field-input" id="edit-army-mode-${i}" style="font-size:12px;padding:4px 6px;">
+            <option value="idle" ${!u.mode || u.mode === 'idle' ? 'selected' : ''}>待機</option>
+            <option value="defend" ${u.mode === 'defend' ? 'selected' : ''}>防衛</option>
+            <option value="move" ${u.mode === 'move' ? 'selected' : ''}>移動中</option>
+            <option value="attack" ${u.mode === 'attack' ? 'selected' : ''}>攻撃中</option>
+          </select>
+        </div>
+      </div>
+      <button class="btn btn-sm btn-blue btn-full" onclick="saveArmyUnit('${cid}', ${i})">保存</button>
+    </div>
+  `).join('');
+}
+
+function saveCountryBasic() {
+  const cid = document.getElementById('edit-country-select').value;
+  if (!cid) return;
+  const c = gameState.countries.find(x => x.id === cid);
+  if (!c) return;
+  const newName = document.getElementById('edit-country-name').value.trim();
+  if (!newName) { alert('国名を入力してください'); return; }
+  c.name = newName;
+  c.color = document.getElementById('edit-country-color').value;
+  const pw = document.getElementById('edit-country-pw').value;
+  if (pw) c.password = pw;
+  updateAllUI();
+  alert('国情報を保存しました');
+}
+
+function saveReserve() {
+  const cid = document.getElementById('edit-country-select').value;
+  if (!cid) return;
+  if (!gameState.armies || !gameState.armies[cid]) { alert('軍隊データがありません'); return; }
+  const val = parseInt(document.getElementById('edit-reserve').value);
+  if (isNaN(val) || val < 0) { alert('正しい数値を入力してください'); return; }
+  gameState.armies[cid].reserve = val;
+  alert('予備兵力を更新しました');
+}
+
+function saveArmyUnit(cid, idx) {
+  if (!gameState.armies || !gameState.armies[cid] || !gameState.armies[cid].units[idx]) return;
+  const u = gameState.armies[cid].units[idx];
+  const newName = document.getElementById(`edit-army-name-${idx}`).value.trim();
+  if (!newName) { alert('部隊名を入力してください'); return; }
+  u.name = newName;
+  u.troops = Math.max(0, parseInt(document.getElementById(`edit-army-troops-${idx}`).value) || 0);
+  u.location = document.getElementById(`edit-army-loc-${idx}`).value || null;
+  u.ap = Math.min(50, Math.max(0, parseInt(document.getElementById(`edit-army-ap-${idx}`).value) || 0));
+  u.mode = document.getElementById(`edit-army-mode-${idx}`).value;
+  renderEditArmyList(cid);
+  updateColors();
+  alert(`${u.name}を更新しました`);
 }
 
 // ============================================================
@@ -1237,9 +1434,10 @@ function normalizeGameState(gs) {
 async function loadFromGist() {
   setSyncStatus('読込中...', '#a8dadc');
   try {
-    const snapshot = await GAME_REF.get();
-    if (!snapshot.exists()) { setSyncStatus('データなし', '#f4a261'); return; }
-    gameState = normalizeGameState(snapshot.val());
+    const [gsSnap, adjSnap] = await Promise.all([GAME_REF.get(), ADJ_REF.get()]);
+    if (!gsSnap.exists()) { setSyncStatus('データなし', '#f4a261'); return; }
+    gameState = normalizeGameState(gsSnap.val());
+    if (adjSnap.exists()) ADJACENCY = adjSnap.val();
     selectedCountryId = null;
     updateAllUI();
     setSyncStatus('読込完了 ✓', '#57cc99');

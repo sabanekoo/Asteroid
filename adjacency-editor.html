@@ -1,0 +1,707 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>隣接エディタ</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: 'Segoe UI', sans-serif; background: #1a1a2e; color: #eee; display: flex; height: 100vh; overflow: hidden; }
+
+    #sidebar { width: 300px; min-width: 300px; background: #16213e; border-right: 1px solid #0f3460; display: flex; flex-direction: column; overflow-y: auto; padding: 12px; gap: 10px; }
+
+    #map-area { flex: 1; overflow: hidden; position: relative; background: #1a1a2e; cursor: grab; user-select: none; }
+    #map-area:active { cursor: grabbing; }
+    #map-inner { position: absolute; top: 0; left: 0; width: 100%; height: 100%; transform-origin: 0 0; }
+    #map-svg-wrap { position: absolute; top: 0; left: 0; width: 100%; height: 100%; }
+    #map-svg-wrap svg { width: 100%; height: 100%; }
+    #overlay-svg { position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; }
+
+    h2 { font-size: 11px; color: #a8dadc; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 6px; }
+    .step-num { color: #e94560; }
+    .section { background: #0f3460; border-radius: 6px; padding: 10px 12px; }
+    .desc { font-size: 10px; color: #888; line-height: 1.5; margin-bottom: 6px; }
+
+    .btn { padding: 6px 12px; background: #e94560; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 12px; font-weight: bold; }
+    .btn:hover { filter: brightness(1.15); }
+    .btn:disabled { opacity: 0.4; cursor: not-allowed; filter: none; }
+    .btn-blue { background: #457b9d; }
+    .btn-green { background: #2d6a4f; }
+    .btn-dark { background: #1d3557; }
+    .btn-orange { background: #e76f51; }
+    .btn-full { width: 100%; }
+    .btn-sm { padding: 4px 10px; font-size: 11px; }
+    .btn.active { background: #e76f51; }
+
+    .status { font-size: 11px; color: #aaa; margin-top: 5px; min-height: 14px; }
+    .status.ok { color: #57cc99; }
+    .status.err { color: #e94560; }
+
+    textarea { width: 100%; height: 130px; background: #16213e; border: 1px solid #0f3460; color: #95d5b2; border-radius: 4px; padding: 6px; font-family: monospace; font-size: 10px; resize: vertical; }
+
+    .sea-item { display: flex; align-items: center; gap: 6px; padding: 3px 0; font-size: 11px; border-bottom: 1px solid #16213e; }
+    .sea-item .del-btn { background: none; border: none; color: #e94560; cursor: pointer; font-size: 14px; line-height: 1; padding: 0; }
+    .sea-item .del-btn:hover { opacity: 0.7; }
+
+    .pref-group { cursor: pointer; }
+    .pref-group path, .pref-group polygon, .pref-group rect, .pref-group circle { stroke: #444; stroke-width: 0.5; transition: opacity 0.1s; }
+    .pref-group:hover path, .pref-group:hover polygon { opacity: 0.75; stroke: #fff; stroke-width: 1.5; }
+    .pref-group.selected path, .pref-group.selected polygon { stroke: #e94560 !important; stroke-width: 2.5 !important; opacity: 0.8; }
+
+    #map-tooltip { position: fixed; background: rgba(0,0,0,0.9); color: #fff; padding: 5px 10px; border-radius: 4px; font-size: 12px; pointer-events: none; display: none; z-index: 100; border: 1px solid #0f3460; }
+
+    .zoom-controls { position: absolute; bottom: 12px; right: 12px; z-index: 10; display: flex; flex-direction: column; gap: 4px; }
+    .zoom-btn { width: 32px; height: 32px; background: #16213ecc; border: 1px solid #a8dadc44; color: #eee; border-radius: 4px; cursor: pointer; font-size: 18px; display: flex; align-items: center; justify-content: center; }
+    .zoom-btn:hover { background: #16213e; border-color: #a8dadc; }
+
+    ::-webkit-scrollbar { width: 4px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: #0f3460; border-radius: 2px; }
+  </style>
+<script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-database-compat.js"></script>
+</head>
+<body>
+
+<div id="sidebar">
+  <div style="font-size:15px;font-weight:bold;color:#e94560;padding-bottom:8px;border-bottom:1px solid #0f3460;">隣接エディタ</div>
+
+  <!-- 1. SVG読み込み -->
+  <div class="section">
+    <h2><span class="step-num">1</span> SVGを読み込む</h2>
+    <input type="file" accept=".svg" id="svg-file-input" style="font-size:11px;color:#aaa;width:100%;" onchange="loadSVG(event)" />
+    <div class="status" id="load-status">SVGファイルを選択してください</div>
+  </div>
+
+  <!-- 2. 自動検出 -->
+  <div class="section">
+    <h2><span class="step-num">2</span> 隣接を自動検出</h2>
+    <p class="desc">県境の接触をピクセル解析して隣接関係を自動構築します</p>
+    <button class="btn btn-blue btn-full" id="detect-btn" onclick="detectAdjacency()" disabled>自動検出する</button>
+    <div class="status" id="detect-status"></div>
+  </div>
+
+  <!-- 3. 海峡設定 -->
+  <div class="section">
+    <h2><span class="step-num">3</span> 海峡を手動設定</h2>
+    <p class="desc">地図上で2県をクリックして海峡（海を越えた隣接）を追加・削除します</p>
+    <button class="btn btn-full" id="sea-mode-btn" onclick="toggleSeaMode()" disabled>海峡追加モード</button>
+    <div class="status" id="sea-status"></div>
+    <div id="sea-list" style="margin-top:8px;max-height:100px;overflow-y:auto;"></div>
+  </div>
+
+  <!-- 4. 出力 -->
+  <div class="section">
+    <h2><span class="step-num">4</span> ADJACENCY 出力</h2>
+    <div style="display:flex;gap:6px;margin-bottom:6px;">
+      <button class="btn btn-green btn-sm" onclick="copyOutput()">コピー</button>
+      <button class="btn btn-dark btn-sm" onclick="downloadOutput()">ダウンロード</button>
+    </div>
+    <textarea id="adj-output" readonly placeholder="隣接検出後に出力されます"></textarea>
+    <div class="status" id="copy-status"></div>
+    <div style="margin-top:6px;font-size:10px;color:#888;" id="adj-summary"></div>
+  </div>
+
+  <!-- 5. Firebaseに保存 -->
+  <div class="section">
+    <h2><span class="step-num">5</span> Firebaseに保存</h2>
+    <p class="desc">隣接データをゲームのFirebaseに書き込みます。admin.htmlと同じ設定値を使用してください。</p>
+    <div style="display:flex;flex-direction:column;gap:5px;margin-bottom:8px;">
+      <input type="text" id="fb-api-key" placeholder="apiKey" style="width:100%;background:#16213e;border:1px solid #0f3460;color:#eee;border-radius:4px;padding:5px 8px;font-size:11px;" />
+      <input type="text" id="fb-db-url" placeholder="databaseURL" style="width:100%;background:#16213e;border:1px solid #0f3460;color:#eee;border-radius:4px;padding:5px 8px;font-size:11px;" />
+    </div>
+    <button class="btn btn-orange btn-full" id="fb-save-btn" onclick="saveToFirebase()" disabled>Firebaseに保存</button>
+    <div class="status" id="fb-status"></div>
+  </div>
+</div>
+
+<div id="map-area">
+  <div id="map-inner">
+    <div id="map-svg-wrap">
+      <div style="color:#555;padding:20px;font-size:13px;">SVGを読み込んでください</div>
+    </div>
+    <svg id="overlay-svg" xmlns="http://www.w3.org/2000/svg"></svg>
+  </div>
+  <div class="zoom-controls">
+    <button class="zoom-btn" onclick="editorZoomIn()">+</button>
+    <button class="zoom-btn" onclick="editorZoomReset()">&#8635;</button>
+    <button class="zoom-btn" onclick="editorZoomOut()">-</button>
+  </div>
+</div>
+
+<div id="map-tooltip"></div>
+
+<script>
+// ============================================================
+//  日本地図用の表示名（他の地図ではIDをそのまま表示）
+// ============================================================
+const NAMES_JA = {
+  Hokkaido:"北海道",Aomori:"青森県",Iwate:"岩手県",Miyagi:"宮城県",
+  Akita:"秋田県",Yamagata:"山形県",Fukushima:"福島県",Ibaraki:"茨城県",
+  Tochigi:"栃木県",Gunma:"群馬県",Saitama:"埼玉県",Chiba:"千葉県",
+  Tokyo:"東京都",Kanagawa:"神奈川県",Niigata:"新潟県",Toyama:"富山県",
+  Ishikawa:"石川県",Fukui:"福井県",Gifu:"岐阜県",Yamanashi:"山梨県",Nagano:"長野県",
+  Shizuoka:"静岡県",Aichi:"愛知県",Mie:"三重県",Shiga:"滋賀県",
+  Kyoto:"京都府",Osaka:"大阪府",Hyogo:"兵庫県",Nara:"奈良県",
+  Wakayama:"和歌山県",Tottori:"鳥取県",Shimane:"島根県",Okayama:"岡山県",
+  Hiroshima:"広島県",Yamaguchi:"山口県",Tokushima:"徳島県",Kagawa:"香川県",
+  Ehime:"愛媛県",Kochi:"高知県",Fukuoka:"福岡県",Saga:"佐賀県",
+  Nagasaki:"長崎県",Kumamoto:"熊本県",Oita:"大分県",Miyazaki:"宮崎県",
+  Kagoshima:"鹿児島県",Okinawa:"沖縄県"
+};
+function stateName(id) { return NAMES_JA[id] || id; }
+
+// ============================================================
+//  状態
+// ============================================================
+let PREFS = [];        // SVGから動的に発見されるステートID一覧
+let svgElement = null;
+let landAdj = {};      // 自動検出による陸上隣接 { prefId: Set<prefId> }
+let seaCrossings = new Set(); // 手動海峡 "prefA|prefB" (ソート済みペア)
+let seaMode = false;
+let selectedPref = null;
+let prefCenters = {};  // SVG座標系での各県中心 { prefId: {cx, cy} }
+
+// Firebase（Step 5用）
+let fbApp = null;
+
+// ズーム・パン
+let zoom = 1, panX = 0, panY = 0;
+let isDragging = false, dragStartX = 0, dragStartY = 0, originPanX = 0, originPanY = 0;
+
+// ============================================================
+//  SVG読み込み
+// ============================================================
+function loadSVG(event) {
+  const file = event.target.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = e => {
+    const wrap = document.getElementById('map-svg-wrap');
+    wrap.innerHTML = e.target.result;
+    svgElement = wrap.querySelector('svg');
+    if (!svgElement) {
+      setStatus('load-status', 'SVG要素が見つかりません', 'err');
+      return;
+    }
+    svgElement.style.width = '100%';
+    svgElement.style.height = '100%';
+    svgElement.removeAttribute('width');
+    svgElement.removeAttribute('height');
+    svgElement.setAttribute('preserveAspectRatio', 'xMinYMin meet');
+
+    // SVG内の *_group 要素を走査してステートIDを動的に発見
+    PREFS = [];
+    landAdj = {};
+    svgElement.querySelectorAll('[id$="_group"]').forEach(g => {
+      const id = g.id.replace(/_group$/, '');
+      PREFS.push(id);
+      landAdj[id] = new Set();
+      g.classList.add('pref-group');
+      g.addEventListener('click', () => onMapClick(id));
+      g.addEventListener('mouseenter', () => showTooltip(id));
+      g.addEventListener('mouseleave', hideTooltip);
+    });
+
+    setStatus('load-status', `読み込み完了 - ${PREFS.length} エリアを認識`, PREFS.length > 0 ? 'ok' : 'err');
+    document.getElementById('detect-btn').disabled = PREFS.length === 0;
+    document.getElementById('sea-mode-btn').disabled = PREFS.length === 0;
+    document.getElementById('fb-save-btn').disabled = PREFS.length === 0;
+
+    // レンダリング後に中心座標を計算
+    setTimeout(() => {
+      computePrefCenters();
+      updateOverlay();
+    }, 150);
+
+    seaCrossings = new Set();
+    renderSeaList();
+    updateOutput();
+    editorZoomReset();
+  };
+  reader.readAsText(file);
+}
+
+// ============================================================
+//  中心座標計算（SVG座標系）
+// ============================================================
+function computePrefCenters() {
+  prefCenters = {};
+  if (!svgElement) return;
+  PREFS.forEach(id => {
+    const g = svgElement.querySelector(`#${id}_group`);
+    if (!g) return;
+    try {
+      const bbox = g.getBBox();
+      if (bbox.width > 0 || bbox.height > 0) {
+        prefCenters[id] = { cx: bbox.x + bbox.width / 2, cy: bbox.y + bbox.height / 2 };
+      }
+    } catch(e) {}
+  });
+}
+
+// ============================================================
+//  自動隣接検出（Canvasピクセル解析）
+// ============================================================
+async function detectAdjacency() {
+  if (!svgElement) return;
+  const btn = document.getElementById('detect-btn');
+  btn.disabled = true;
+  setStatus('detect-status', '解析中... しばらくお待ちください', '');
+
+  try {
+    const clone = svgElement.cloneNode(true);
+    clone.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
+    clone.removeAttribute('style');
+    clone.removeAttribute('class');
+
+    // 全スタイルを除去
+    clone.querySelectorAll('[style]').forEach(el => el.removeAttribute('style'));
+    clone.querySelectorAll('[class]').forEach(el => el.removeAttribute('class'));
+
+    // 背景を黒で塗りつぶし
+    const bg = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+    bg.setAttribute('x', '-99999'); bg.setAttribute('y', '-99999');
+    bg.setAttribute('width', '199999'); bg.setAttribute('height', '199999');
+    bg.setAttribute('fill', '#000000');
+    clone.insertBefore(bg, clone.firstChild);
+
+    // 各ステートを一意の色で塗る（RG 2バイトエンコード、最大65535ステート対応）
+    // index i → R=(i+1)&0xFF, G=(i+1)>>8  (B=0)
+    PREFS.forEach((id, i) => {
+      const g = clone.querySelector(`#${id}_group`);
+      if (!g) return;
+      const code = i + 1;
+      const r = code & 0xFF, gv = code >> 8;
+      g.querySelectorAll('path, polygon, rect, circle, ellipse, polyline').forEach(el => {
+        el.setAttribute('fill', `rgb(${r},${gv},0)`);
+        el.setAttribute('stroke', 'none');
+        el.setAttribute('stroke-width', '0');
+        el.removeAttribute('filter');
+      });
+    });
+
+    const vb = svgElement.viewBox.baseVal;
+    const W = 900, H = 700;
+    clone.setAttribute('width', W);
+    clone.setAttribute('height', H);
+    if (vb && vb.width > 0) {
+      clone.setAttribute('viewBox', `${vb.x} ${vb.y} ${vb.width} ${vb.height}`);
+    }
+    clone.setAttribute('preserveAspectRatio', 'xMinYMin meet');
+
+    const svgStr = new XMLSerializer().serializeToString(clone);
+    const blob = new Blob([svgStr], { type: 'image/svg+xml;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+
+    const img = new Image();
+    await new Promise((resolve, reject) => {
+      img.onload = resolve;
+      img.onerror = () => reject(new Error('SVGの画像変換に失敗しました'));
+      img.src = url;
+    });
+
+    const canvas = document.createElement('canvas');
+    canvas.width = W; canvas.height = H;
+    const ctx = canvas.getContext('2d');
+    ctx.imageSmoothingEnabled = false;
+    ctx.drawImage(img, 0, 0, W, H);
+    URL.revokeObjectURL(url);
+
+    const data = ctx.getImageData(0, 0, W, H).data;
+
+    PREFS.forEach(id => { landAdj[id] = new Set(); });
+
+    // 隣接検出: 各ピクセルの4方向 × 2ピクセル先を確認
+    // RG 2バイトデコード: composite = G*256 + R (0 = 背景)
+    function getCode(px, py) {
+      const base = (py * W + px) * 4;
+      const r = data[base], g = data[base + 1];
+      return g * 256 + r;
+    }
+    for (let y = 0; y < H; y++) {
+      for (let x = 0; x < W; x++) {
+        const cA = getCode(x, y);
+        if (cA === 0) continue;
+        const iA = cA - 1;
+        if (iA < 0 || iA >= PREFS.length) continue;
+
+        for (const [dx, dy] of [[2,0],[-2,0],[0,2],[0,-2],[1,0],[-1,0],[0,1],[0,-1]]) {
+          const nx = x + dx, ny = y + dy;
+          if (nx < 0 || nx >= W || ny < 0 || ny >= H) continue;
+          const cB = getCode(nx, ny);
+          if (cB === 0 || cB === cA) continue;
+          const iB = cB - 1;
+          if (iB < 0 || iB >= PREFS.length || iB === iA) continue;
+          landAdj[PREFS[iA]].add(PREFS[iB]);
+          landAdj[PREFS[iB]].add(PREFS[iA]);
+        }
+      }
+    }
+
+    const total = PREFS.reduce((s, id) => s + landAdj[id].size, 0) / 2;
+    setStatus('detect-status', `検出完了 - ${Math.round(total)}組の隣接を検出`, 'ok');
+    updateOverlay();
+    updateOutput();
+  } catch(e) {
+    setStatus('detect-status', `エラー: ${e.message}`, 'err');
+  }
+  btn.disabled = false;
+}
+
+// ============================================================
+//  海峡設定
+// ============================================================
+function toggleSeaMode() {
+  seaMode = !seaMode;
+  selectedPref = null;
+  clearHighlight();
+  const btn = document.getElementById('sea-mode-btn');
+  btn.textContent = seaMode ? 'モードを終了' : '海峡追加モード';
+  btn.classList.toggle('active', seaMode);
+  setStatus('sea-status', seaMode ? '1つ目の県をクリックしてください' : '');
+  updateOverlay();
+}
+
+function onMapClick(prefId) {
+  if (!seaMode) return;
+
+  if (!selectedPref) {
+    selectedPref = prefId;
+    setStatus('sea-status', `${stateName(prefId)} を選択 - 2つ目のエリアをクリック`);
+    highlightSelected();
+    updateOverlay();
+    return;
+  }
+
+  if (selectedPref === prefId) {
+    selectedPref = null;
+    clearHighlight();
+    setStatus('sea-status', '1つ目の県をクリックしてください');
+    updateOverlay();
+    return;
+  }
+
+  const key = [selectedPref, prefId].sort().join('|');
+  const nameA = stateName(selectedPref);
+  const nameB = stateName(prefId);
+
+  if (seaCrossings.has(key)) {
+    seaCrossings.delete(key);
+    setStatus('sea-status', `${nameA} - ${nameB} の海峡を削除`, 'ok');
+  } else {
+    seaCrossings.add(key);
+    setStatus('sea-status', `${nameA} - ${nameB} の海峡を追加`, 'ok');
+  }
+
+  selectedPref = null;
+  clearHighlight();
+  renderSeaList();
+  updateOverlay();
+  updateOutput();
+}
+
+function removeSea(key) {
+  seaCrossings.delete(key);
+  renderSeaList();
+  updateOverlay();
+  updateOutput();
+}
+
+function renderSeaList() {
+  const el = document.getElementById('sea-list');
+  if (!seaCrossings.size) {
+    el.innerHTML = '<div style="font-size:11px;color:#555;">海峡なし</div>';
+    return;
+  }
+  el.innerHTML = [...seaCrossings].sort().map(key => {
+    const [a, b] = key.split('|');
+    return `<div class="sea-item">
+      <span style="flex:1;">${stateName(a)} - ${stateName(b)}</span>
+      <button class="del-btn" onclick="removeSea('${key}')">x</button>
+    </div>`;
+  }).join('');
+}
+
+function highlightSelected() {
+  if (!svgElement || !selectedPref) return;
+  PREFS.forEach(id => {
+    const g = svgElement.querySelector(`#${id}_group`);
+    if (g) g.classList.toggle('selected', id === selectedPref);
+  });
+}
+
+function clearHighlight() {
+  if (!svgElement) return;
+  PREFS.forEach(id => {
+    const g = svgElement.querySelector(`#${id}_group`);
+    if (g) g.classList.remove('selected');
+  });
+}
+
+// ============================================================
+//  オーバーレイ描画
+// ============================================================
+function updateOverlay() {
+  const overlay = document.getElementById('overlay-svg');
+  overlay.innerHTML = '';
+  if (!svgElement) return;
+
+  const vb = svgElement.viewBox.baseVal;
+  if (!vb || vb.width === 0) return;
+  overlay.setAttribute('viewBox', `${vb.x} ${vb.y} ${vb.width} ${vb.height}`);
+  overlay.setAttribute('preserveAspectRatio', 'xMinYMin meet');
+
+  const drawnLand = new Set();
+
+  // 陸上隣接ライン（薄いグレー）
+  PREFS.forEach(prefA => {
+    const cA = prefCenters[prefA];
+    if (!cA) return;
+    (landAdj[prefA] || new Set()).forEach(prefB => {
+      const key = [prefA, prefB].sort().join('|');
+      if (drawnLand.has(key)) return;
+      if (seaCrossings.has(key)) return;
+      drawnLand.add(key);
+      const cB = prefCenters[prefB];
+      if (!cB) return;
+      const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+      line.setAttribute('x1', cA.cx); line.setAttribute('y1', cA.cy);
+      line.setAttribute('x2', cB.cx); line.setAttribute('y2', cB.cy);
+      line.setAttribute('stroke', '#888'); line.setAttribute('stroke-width', '0.5');
+      line.setAttribute('opacity', '0.35');
+      overlay.appendChild(line);
+    });
+  });
+
+  // 海峡ライン（青破線）
+  seaCrossings.forEach(key => {
+    const [a, b] = key.split('|');
+    const cA = prefCenters[a], cB = prefCenters[b];
+    if (!cA || !cB) return;
+    const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+    line.setAttribute('x1', cA.cx); line.setAttribute('y1', cA.cy);
+    line.setAttribute('x2', cB.cx); line.setAttribute('y2', cB.cy);
+    line.setAttribute('stroke', '#457b9d'); line.setAttribute('stroke-width', '1.5');
+    line.setAttribute('stroke-dasharray', '5,3'); line.setAttribute('opacity', '0.9');
+    overlay.appendChild(line);
+  });
+
+  // 選択中県ハイライト
+  if (seaMode && selectedPref && prefCenters[selectedPref]) {
+    const c = prefCenters[selectedPref];
+    const circle = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+    circle.setAttribute('cx', c.cx); circle.setAttribute('cy', c.cy);
+    circle.setAttribute('r', '10'); circle.setAttribute('fill', '#e94560');
+    circle.setAttribute('opacity', '0.5');
+    overlay.appendChild(circle);
+  }
+
+  // 中心点
+  PREFS.forEach(id => {
+    const c = prefCenters[id];
+    if (!c) return;
+    const dot = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+    dot.setAttribute('cx', c.cx); dot.setAttribute('cy', c.cy);
+    dot.setAttribute('r', '2'); dot.setAttribute('fill', '#a8dadc');
+    dot.setAttribute('opacity', '0.5');
+    overlay.appendChild(dot);
+  });
+}
+
+// ============================================================
+//  出力
+// ============================================================
+function updateOutput() {
+  const effective = {};
+  PREFS.forEach(id => {
+    effective[id] = new Set(landAdj[id]);
+  });
+  seaCrossings.forEach(key => {
+    const [a, b] = key.split('|');
+    if (effective[a]) effective[a].add(b);
+    if (effective[b]) effective[b].add(a);
+  });
+
+  const lines = PREFS.map(id => {
+    const adj = [...(effective[id] || [])].sort();
+    return `  ${id}:[${adj.map(x => `"${x}"`).join(',')}]`;
+  });
+  document.getElementById('adj-output').value =
+    `const ADJACENCY = {\n${lines.join(',\n')}\n};`;
+
+  const total = PREFS.reduce((s, id) => s + (effective[id] || new Set()).size, 0) / 2;
+  document.getElementById('adj-summary').textContent =
+    `隣接ペア: ${Math.round(total)}組 (陸上 ${Math.round(total - seaCrossings.size)}組 + 海峡 ${seaCrossings.size}組)`;
+}
+
+function copyOutput() {
+  const val = document.getElementById('adj-output').value;
+  if (!val) return;
+  navigator.clipboard.writeText(val).then(() => {
+    setStatus('copy-status', 'コピーしました', 'ok');
+    setTimeout(() => setStatus('copy-status', ''), 2000);
+  }).catch(() => {
+    document.getElementById('adj-output').select();
+    document.execCommand('copy');
+    setStatus('copy-status', 'コピーしました', 'ok');
+  });
+}
+
+function downloadOutput() {
+  const val = document.getElementById('adj-output').value;
+  if (!val) return;
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([val], { type: 'text/javascript' }));
+  a.download = 'adjacency.js';
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+
+// ============================================================
+//  ツールチップ
+// ============================================================
+const tooltip = document.getElementById('map-tooltip');
+document.addEventListener('mousemove', e => {
+  tooltip.style.left = (e.clientX + 12) + 'px';
+  tooltip.style.top = (e.clientY - 8) + 'px';
+});
+function showTooltip(prefId) {
+  const effective = new Set(landAdj[prefId]);
+  seaCrossings.forEach(key => {
+    const [a, b] = key.split('|');
+    if (a === prefId) effective.add(b);
+    if (b === prefId) effective.add(a);
+  });
+  const adjNames = [...effective].map(id => stateName(id)).join(', ') || 'なし';
+  tooltip.innerHTML = `<strong>${stateName(prefId)}</strong><br><span style="font-size:10px;color:#aaa;">隣接: ${adjNames}</span>`;
+  tooltip.style.display = 'block';
+}
+function hideTooltip() { tooltip.style.display = 'none'; }
+
+// ============================================================
+//  ズーム・パン
+// ============================================================
+function applyTransform() {
+  const el = document.getElementById('map-inner');
+  if (el) el.style.transform = `translate(${panX}px, ${panY}px) scale(${zoom})`;
+}
+
+function zoomAt(cx, cy, factor) {
+  const newZoom = Math.max(0.5, Math.min(15, zoom * factor));
+  panX = cx - (cx - panX) * (newZoom / zoom);
+  panY = cy - (cy - panY) * (newZoom / zoom);
+  zoom = newZoom;
+  applyTransform();
+}
+
+function editorZoomIn() {
+  const r = document.getElementById('map-area').getBoundingClientRect();
+  zoomAt(r.width / 2, r.height / 2, 1.3);
+}
+function editorZoomOut() {
+  const r = document.getElementById('map-area').getBoundingClientRect();
+  zoomAt(r.width / 2, r.height / 2, 1 / 1.3);
+}
+function editorZoomReset() { zoom = 1; panX = 0; panY = 0; applyTransform(); }
+
+window.addEventListener('load', () => {
+  const mapArea = document.getElementById('map-area');
+
+  mapArea.addEventListener('wheel', e => {
+    e.preventDefault();
+    const r = mapArea.getBoundingClientRect();
+    zoomAt(e.clientX - r.left, e.clientY - r.top, e.deltaY < 0 ? 1.12 : 1 / 1.12);
+  }, { passive: false });
+
+  mapArea.addEventListener('mousedown', e => {
+    isDragging = true;
+    dragStartX = e.clientX; dragStartY = e.clientY;
+    originPanX = panX; originPanY = panY;
+  });
+  document.addEventListener('mousemove', e => {
+    if (!isDragging) return;
+    panX = originPanX + (e.clientX - dragStartX);
+    panY = originPanY + (e.clientY - dragStartY);
+    applyTransform();
+  });
+  document.addEventListener('mouseup', () => { isDragging = false; });
+
+  mapArea.addEventListener('touchstart', e => {
+    if (e.touches.length === 1) {
+      isDragging = true;
+      dragStartX = e.touches[0].clientX; dragStartY = e.touches[0].clientY;
+      originPanX = panX; originPanY = panY;
+    }
+  }, { passive: true });
+  mapArea.addEventListener('touchmove', e => {
+    e.preventDefault();
+    if (e.touches.length === 1 && isDragging) {
+      panX = originPanX + (e.touches[0].clientX - dragStartX);
+      panY = originPanY + (e.touches[0].clientY - dragStartY);
+      applyTransform();
+    }
+  }, { passive: false });
+  mapArea.addEventListener('touchend', () => { isDragging = false; });
+});
+
+// ============================================================
+//  ユーティリティ
+// ============================================================
+function setStatus(id, msg, type) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.textContent = msg;
+  el.className = 'status' + (type ? ' ' + type : '');
+}
+
+// ============================================================
+//  Firebase保存
+// ============================================================
+async function saveToFirebase() {
+  const apiKey = document.getElementById('fb-api-key').value.trim();
+  const dbUrl  = document.getElementById('fb-db-url').value.trim();
+  if (!apiKey || !dbUrl) {
+    setStatus('fb-status', 'apiKey と databaseURL を入力してください', 'err');
+    return;
+  }
+
+  const outputVal = document.getElementById('adj-output').value;
+  if (!outputVal) {
+    setStatus('fb-status', '先に隣接を検出してください', 'err');
+    return;
+  }
+
+  // effective adjacency をオブジェクトとして構築
+  const effective = {};
+  PREFS.forEach(id => {
+    effective[id] = [...new Set([...landAdj[id]])];
+  });
+  seaCrossings.forEach(key => {
+    const [a, b] = key.split('|');
+    if (effective[a] && !effective[a].includes(b)) effective[a].push(b);
+    if (effective[b] && !effective[b].includes(a)) effective[b].push(a);
+  });
+
+  setStatus('fb-status', '接続中...', '');
+  const btn = document.getElementById('fb-save-btn');
+  btn.disabled = true;
+
+  try {
+    // 既存アプリがあれば削除して再作成
+    if (fbApp) { await fbApp.delete(); fbApp = null; }
+    fbApp = firebase.initializeApp({ apiKey, databaseURL: dbUrl }, 'editor-' + Date.now());
+    const ref = fbApp.database().ref('adjacency');
+    await ref.set(effective);
+    setStatus('fb-status', `保存完了 - ${PREFS.length} エリア分の隣接データを書き込みました`, 'ok');
+  } catch (e) {
+    setStatus('fb-status', `保存失敗: ${e.message}`, 'err');
+  }
+  btn.disabled = false;
+}
+
+// 初期化
+renderSeaList();
+</script>
+</body>
+</html>

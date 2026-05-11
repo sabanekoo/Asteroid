@@ -212,7 +212,7 @@
 <!-- ===================== LOGIN ===================== -->
 <div class="page active" id="page-login">
   <div class="login-box">
-    <h1>Asteroid 臨時シーズン</h1>
+    <h1>アステロイデス</h1>
     <p>自国を選択してパスワードを入力してください</p>
     <div id="login-load-status" style="font-size:11px;color:#888;min-height:16px;"></div>
 
@@ -229,7 +229,7 @@
 <!-- ===================== HOME ===================== -->
 <div class="page" id="page-home">
   <div class="topbar">
-    <h1>Asteroid</h1>
+    <h1>アステロイデス</h1>
     <div class="country-badge" id="home-country-badge"></div>
     <div class="turn-info">ターン <span id="home-turn">0</span></div>
     <div class="topbar-right">
@@ -279,7 +279,7 @@
 <!-- ===================== LOG ===================== -->
 <div class="page" id="page-log">
   <div class="topbar">
-    <h1>Asteroid</h1>
+    <h1>アステロイデス</h1>
     <div class="country-badge" id="log-country-badge"></div>
     <div class="topbar-right">
       <button class="btn btn-sm btn-dark" onclick="syncData()">同期</button>
@@ -311,7 +311,7 @@
 <!-- ===================== ARMIES ===================== -->
 <div class="page" id="page-armies">
   <div class="topbar">
-    <h1>Asteroid</h1>
+    <h1>アステロイデス</h1>
     <div class="country-badge" id="armies-country-badge"></div>
     <div class="topbar-right">
       <button class="btn btn-sm btn-blue" onclick="saveOrders()">命令を保存</button>
@@ -446,7 +446,7 @@
 <!-- ===================== SETTINGS ===================== -->
 <div class="page" id="page-settings">
   <div class="topbar">
-    <h1>Asteroid</h1>
+    <h1>アステロイデス</h1>
     <div class="country-badge" id="settings-country-badge"></div>
     <div class="topbar-right">
       <button class="btn btn-sm btn-dark" onclick="doLogout()">ログアウト</button>
@@ -489,7 +489,7 @@
 <script src="map-svg.js"></script>
 <script>
 // ============================================================
-//  Firebase 設定
+//  Firebase 設定（ここを自分のプロジェクトの値に変更してください）
 // ============================================================
 const FIREBASE_CONFIG = {
   apiKey:            "AIzaSyCjYUL9nzaE_JCVIIAc9rhBkHRNXurgKsQ",
@@ -502,6 +502,7 @@ const FIREBASE_CONFIG = {
 };
 firebase.initializeApp(FIREBASE_CONFIG);
 const GAME_REF = firebase.database().ref('gamestate');
+const ADJ_REF  = firebase.database().ref('adjacency');
 
 // ============================================================
 //  定数・隣接データ
@@ -523,7 +524,8 @@ const NAMES = {
 };
 const PREFS = Object.keys(NAMES);
 
-const ADJACENCY = {
+// Firebaseから読み込む。未取得時は日本地図のデフォルト値を使用
+let ADJACENCY = {
   Hokkaido:["Aomori"],Aomori:["Hokkaido","Iwate","Akita"],Iwate:["Aomori","Akita","Miyagi","Yamagata"],
   Akita:["Aomori","Iwate","Miyagi","Yamagata"],Miyagi:["Iwate","Akita","Yamagata","Fukushima"],
   Yamagata:["Akita","Iwate","Miyagi","Fukushima","Niigata"],
@@ -571,8 +573,9 @@ let hqMapWasDragging = false;
 let hqSpyMode = false;
 let spyTargetPref = null;
 
-// Map zoom/pan state
-let hqZoomScale = 1, hqPanX = 0, hqPanY = 0;
+// Map viewBox state (iOS対応: CSSのtransformではなくviewBoxを操作してSVGの品質を保持)
+let hqVBX = 0, hqVBY = 0, hqVBW = 1000, hqVBH = 1000;
+let hqInitVBX = 0, hqInitVBY = 0, hqInitVBW = 1000, hqInitVBH = 1000;
 
 function uid() { return '_' + Math.random().toString(36).slice(2,10); }
 
@@ -611,14 +614,15 @@ function normalizeGameState(gs) {
 async function autoLoadGist() {
   document.getElementById('login-load-status').textContent = 'データを読み込み中...';
   try {
-    const snapshot = await GAME_REF.get();
-    if (!snapshot.exists()) {
+    const [gsSnap, adjSnap] = await Promise.all([GAME_REF.get(), ADJ_REF.get()]);
+    if (!gsSnap.exists()) {
       gameState = { turn: 0, countries: [], territories: {}, armies: {}, pendingOrders: [], gameLog: [] };
       document.getElementById('login-load-status').textContent = 'データなし（管理者がゲームを設定してください）';
       document.getElementById('country-select').innerHTML = '<option value="">-- データなし --</option>';
       return;
     }
-    gameState = normalizeGameState(snapshot.val());
+    gameState = normalizeGameState(gsSnap.val());
+    if (adjSnap.exists()) ADJACENCY = adjSnap.val();
     populateCountrySelect();
     document.getElementById('login-load-status').textContent = `読み込み完了（ターン${gameState.turn}）`;
   } catch (e) {
@@ -797,13 +801,15 @@ function renderHome() {
 function renderLog() {
   updateBadges();
   const baseEntries = (gameState && gameState.gameLog) ? gameState.gameLog : [];
-  // 諜報結果・警告を追加
+  // 諜報結果・警告を追加（当ターン分のみ）
   const spyEntries = [];
   if (myCountryId) {
     (gameState.spyResults && gameState.spyResults[myCountryId] || []).forEach(r => {
+      if (r.turn !== gameState.turn) return;
       spyEntries.push({ type: 'spy', turn: r.turn, text: `【諜報情報】${r.text}` });
     });
     (gameState.spyAlerts && gameState.spyAlerts[myCountryId] || []).forEach(a => {
+      if (a.turn !== gameState.turn) return;
       spyEntries.push({ type: 'spy', turn: a.turn, text: `【警告】${a.text}` });
     });
   }
@@ -1189,8 +1195,8 @@ function updateSpyUI() {
   const results = (gameState.spyResults && gameState.spyResults[myCountryId]) || [];
   const alerts  = (gameState.spyAlerts  && gameState.spyAlerts[myCountryId])  || [];
   let html = '';
-  alerts.forEach(a => { html += `<div style="color:#f4a261;padding:2px 0;border-bottom:1px solid #1a3d2e;">T${a.turn}: ${a.text}</div>`; });
-  results.slice(0, 5).forEach(r => {
+  alerts.filter(a => a.turn === gameState.turn).forEach(a => { html += `<div style="color:#f4a261;padding:2px 0;border-bottom:1px solid #1a3d2e;">T${a.turn}: ${a.text}</div>`; });
+  results.filter(r => r.turn === gameState.turn).slice(0, 5).forEach(r => {
     const col = r.failed ? '#888' : '#95d5b2';
     html += `<div style="color:${col};padding:2px 0;border-bottom:1px solid #1a3d2e;">T${r.turn}: ${r.text}</div>`;
   });
@@ -1310,9 +1316,9 @@ function updateArmyMarkers() {
     const count = entries.length;
 
     entries.forEach(({ country, army, armyIdx, isMine }, i) => {
-      const offsetX = count > 1 ? (i - (count - 1) / 2) * 7 : 0;
+      const offsetX = count > 1 ? (i - (count - 1) / 2) * 5 : 0;
       const isSelected = (isMine && armyIdx === hqSelectedArmyIdx);
-      const r = isSelected ? 4.5 : 3;
+      const r = isSelected ? 3 : 2;
 
       const circle = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
       circle.setAttribute('cx', cx + offsetX);
@@ -1320,15 +1326,15 @@ function updateArmyMarkers() {
       circle.setAttribute('r', r);
       circle.setAttribute('fill', country.color);
       circle.setAttribute('stroke', isSelected ? '#fff' : '#222');
-      circle.setAttribute('stroke-width', isSelected ? '1.2' : '0.6');
+      circle.setAttribute('stroke-width', isSelected ? '1' : '0.5');
       circle.style.pointerEvents = 'none';
       markersG.appendChild(circle);
 
       const label = document.createElementNS('http://www.w3.org/2000/svg', 'text');
       label.setAttribute('x', cx + offsetX);
-      label.setAttribute('y', cy + 2.5);
+      label.setAttribute('y', cy + 1.8);
       label.setAttribute('text-anchor', 'middle');
-      label.setAttribute('font-size', '3');
+      label.setAttribute('font-size', '2.5');
       label.setAttribute('fill', '#fff');
       label.setAttribute('font-weight', 'bold');
       label.setAttribute('pointer-events', 'none');
@@ -1339,7 +1345,7 @@ function updateArmyMarkers() {
         const def = document.createElementNS('http://www.w3.org/2000/svg', 'text');
         def.setAttribute('x', cx + offsetX + r);
         def.setAttribute('y', cy - r + 1);
-        def.setAttribute('font-size', '3');
+        def.setAttribute('font-size', '2.5');
         def.setAttribute('fill', '#a8dadc');
         def.setAttribute('pointer-events', 'none');
         def.textContent = '防';
@@ -1362,6 +1368,15 @@ async function initHQMap() {
       svg.style.width = '100%'; svg.style.height = '100%';
       svg.style.backgroundColor = '#1a1a2e';
       svg.removeAttribute('width'); svg.removeAttribute('height');
+      svg.setAttribute('preserveAspectRatio', 'xMinYMin meet');
+      // viewBox初期値を読み取ってズーム状態を初期化
+      const vb = svg.viewBox.baseVal;
+      if (vb && vb.width > 0) {
+        hqInitVBX = vb.x; hqInitVBY = vb.y;
+        hqInitVBW = vb.width; hqInitVBH = vb.height;
+        hqVBX = vb.x; hqVBY = vb.y;
+        hqVBW = vb.width; hqVBH = vb.height;
+      }
 
       // IDをhq_プレフィックスつきに変更してadmin側と衝突しないようにする
       svg.querySelectorAll('[id]').forEach(el => {
@@ -1430,18 +1445,27 @@ function saveSettings() {
 }
 
 // ============================================================
-//  HQ地図 ズーム・パン
+//  HQ地図 ズーム・パン（SVG viewBox操作でiOS高品質を実現）
 // ============================================================
 function applyHQTransform() {
-  const c = document.getElementById('hq-map-container');
-  if (c) c.style.transform = `translate(${hqPanX}px,${hqPanY}px) scale(${hqZoomScale})`;
+  const svg = document.querySelector('#hq-map-container svg');
+  if (svg) svg.setAttribute('viewBox', `${hqVBX} ${hqVBY} ${hqVBW} ${hqVBH}`);
 }
 
 function hqZoomAt(cx, cy, factor) {
-  const newScale = Math.max(0.5, Math.min(12, hqZoomScale * factor));
-  hqPanX = cx - (cx - hqPanX) * (newScale / hqZoomScale);
-  hqPanY = cy - (cy - hqPanY) * (newScale / hqZoomScale);
-  hqZoomScale = newScale;
+  const mapEl = document.getElementById('hq-map');
+  const rect = mapEl.getBoundingClientRect();
+  const pw = rect.width || 1, ph = rect.height || 1;
+  // カーソル下のSVG座標を固定しながらviewBoxを縮小/拡大
+  const svgX = hqVBX + (cx / pw) * hqVBW;
+  const svgY = hqVBY + (cy / ph) * hqVBH;
+  const minW = hqInitVBW / 12;
+  const newVBW = Math.min(hqInitVBW, Math.max(minW, hqVBW / factor));
+  const newVBH = hqInitVBH * (newVBW / hqInitVBW);
+  hqVBX = svgX - (cx / pw) * newVBW;
+  hqVBY = svgY - (cy / ph) * newVBH;
+  hqVBW = newVBW;
+  hqVBH = newVBH;
   applyHQTransform();
 }
 
@@ -1458,7 +1482,8 @@ function hqZoomOut() {
 }
 
 function hqZoomReset() {
-  hqZoomScale = 1; hqPanX = 0; hqPanY = 0;
+  hqVBX = hqInitVBX; hqVBY = hqInitVBY;
+  hqVBW = hqInitVBW; hqVBH = hqInitVBH;
   applyHQTransform();
 }
 
@@ -1472,7 +1497,8 @@ window.addEventListener('load', () => {
 
 function setupHQMapEvents() {
   const mapEl = document.getElementById('hq-map');
-  let isDragging = false, dragStartX = 0, dragStartY = 0, originPanX = 0, originPanY = 0;
+  let isDragging = false, dragStartX = 0, dragStartY = 0;
+  let originVBX = 0, originVBY = 0, dragVBW = 1000, dragVBH = 1000;
   let lastPinchDist = 0;
 
   mapEl.addEventListener('wheel', e => {
@@ -1484,7 +1510,8 @@ function setupHQMapEvents() {
   mapEl.addEventListener('mousedown', e => {
     isDragging = true; hqMapWasDragging = false;
     dragStartX = e.clientX; dragStartY = e.clientY;
-    originPanX = hqPanX; originPanY = hqPanY;
+    originVBX = hqVBX; originVBY = hqVBY;
+    dragVBW = hqVBW; dragVBH = hqVBH;
   });
 
   document.addEventListener('mousemove', e => {
@@ -1492,8 +1519,9 @@ function setupHQMapEvents() {
     if (Math.abs(e.clientX - dragStartX) > 4 || Math.abs(e.clientY - dragStartY) > 4) {
       hqMapWasDragging = true;
     }
-    hqPanX = originPanX + (e.clientX - dragStartX);
-    hqPanY = originPanY + (e.clientY - dragStartY);
+    const rect = mapEl.getBoundingClientRect();
+    hqVBX = originVBX - ((e.clientX - dragStartX) / rect.width) * dragVBW;
+    hqVBY = originVBY - ((e.clientY - dragStartY) / rect.height) * dragVBH;
     applyHQTransform();
   });
 
@@ -1508,7 +1536,8 @@ function setupHQMapEvents() {
     } else if (e.touches.length === 1) {
       isDragging = true; hqMapWasDragging = false;
       dragStartX = e.touches[0].clientX; dragStartY = e.touches[0].clientY;
-      originPanX = hqPanX; originPanY = hqPanY;
+      originVBX = hqVBX; originVBY = hqVBY;
+      dragVBW = hqVBW; dragVBH = hqVBH;
     }
   }, { passive: true });
 
@@ -1529,8 +1558,9 @@ function setupHQMapEvents() {
       if (Math.abs(e.touches[0].clientX - dragStartX) > 4 || Math.abs(e.touches[0].clientY - dragStartY) > 4) {
         hqMapWasDragging = true;
       }
-      hqPanX = originPanX + (e.touches[0].clientX - dragStartX);
-      hqPanY = originPanY + (e.touches[0].clientY - dragStartY);
+      const rect = mapEl.getBoundingClientRect();
+      hqVBX = originVBX - ((e.touches[0].clientX - dragStartX) / rect.width) * dragVBW;
+      hqVBY = originVBY - ((e.touches[0].clientY - dragStartY) / rect.height) * dragVBH;
       applyHQTransform();
     }
   }, { passive: false });
