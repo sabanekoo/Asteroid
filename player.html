@@ -378,14 +378,13 @@
           <div>
             <label style="font-size:11px;color:#888;">命令種別</label>
             <select class="field-input" id="hq-order-type" onchange="onOrderTypeChange()">
-              <option value="move">移動</option>
+              <option value="move">移動（敵県は自動占領）</option>
               <option value="defend">防衛配置</option>
-              <option value="attack">攻撃（占領）</option>
             </select>
           </div>
           <div>
-            <label style="font-size:11px;color:#888;">開始単位時間（0〜45）</label>
-            <input type="number" class="field-input" id="hq-start-time" min="0" max="45" value="0" />
+            <label style="font-size:11px;color:#888;">開始ラウンド（0=即時）</label>
+            <input type="number" class="field-input" id="hq-start-time" min="0" max="99" value="0" />
           </div>
           <div id="hq-path-section">
             <label style="font-size:11px;color:#888;">経路（地図をクリックして追加）</label>
@@ -558,6 +557,33 @@ let ADJACENCY = {
   Kagoshima:["Miyazaki","Kumamoto","Okinawa"],Okinawa:["Kagoshima"]
 };
 
+// 作戦（攻撃時 / 防御時）
+const ATK_STRATEGIES = {
+  '通常攻勢':   'いつも通りの攻勢',
+  '強行軍':     '被害無視。AP制限を無視して目の前の県を強引に占領',
+  '慎重な前進': '被害を最小限に抑えて前進',
+  '電撃戦':     '被害無視。AP消費を抑えて遠くまで進撃'
+};
+const DEF_STRATEGIES = {
+  '通常防衛':   'いつも通りの防衛',
+  '死守':       '滅びるまで撤退しない。基礎能力低下',
+  '遅滞戦術':   '県を明け渡すが敵被害を最大化し自軍被害を軽減',
+  '人命優先':   '基礎能力低下と引き換えに被害を大きく軽減'
+};
+const ATK_STRATEGY_NAMES = Object.keys(ATK_STRATEGIES);
+const DEF_STRATEGY_NAMES = Object.keys(DEF_STRATEGIES);
+
+// 県境ヘルパー（県と県境は別ポジション）
+function isBorder(loc) { return typeof loc === 'string' && loc.indexOf('|') >= 0; }
+function locName(loc) {
+  if (!loc) return '未配置';
+  if (isBorder(loc)) {
+    const [a, b] = loc.split('|');
+    return `${NAMES[a] || a}〜${NAMES[b] || b}間`;
+  }
+  return NAMES[loc] || loc;
+}
+
 // ============================================================
 //  状態
 // ============================================================
@@ -568,7 +594,7 @@ let logFilter = 'all';
 let hqMapReady = false;
 let hqPath = [];
 let hqDefendTarget = null;
-let hqSelectedArmyIdx = null;
+let hqSelectedArmyId = null;
 let hqMapWasDragging = false;
 let hqSpyMode = false;
 let spyTargetPref = null;
@@ -608,6 +634,23 @@ function normalizeGameState(gs) {
   gs.gameLog       = gs.gameLog       || [];
   gs.spyResults    = gs.spyResults    || {};
   gs.spyAlerts     = gs.spyAlerts     || {};
+  Object.values(gs.armies).forEach(ad => {
+    if (!ad) return;
+    if (!Array.isArray(ad.units)) ad.units = ad.units ? Object.values(ad.units) : [];
+    ad.units.forEach(u => {
+      if (!u.id) u.id = uid();
+      if (u.troops == null) u.troops = 0;
+      if (u.ap == null) u.ap = 50;
+      if (!u.mode) u.mode = 'idle';
+      if (!u.specialUnits) u.specialUnits = [];
+      if (!u.atkStrategy) u.atkStrategy = '通常攻勢';
+      if (!u.defStrategy) u.defStrategy = '通常防衛';
+    });
+  });
+  gs.pendingOrders.forEach(o => {
+    if (o.startRound == null && o.startTime != null) o.startRound = o.startTime;
+    if (o.startRound == null) o.startRound = 0;
+  });
   return gs;
 }
 
@@ -748,19 +791,17 @@ function myArmies() {
 
 function ensureArmies() {
   if (!gameState.armies) gameState.armies = {};
-  if (!gameState.armies[myCountryId]) {
-    gameState.armies[myCountryId] = {
-      reserve: 0,
-      units: Array.from({ length: 5 }, (_, i) => ({
-        id: uid(), name: `第${i+1}軍`, troops: 0, location: null, ap: 50, orders: [], specialUnits: [], mode: 'idle'
-      }))
-    };
-  }
-  if (!gameState.armies[myCountryId].units) {
-    gameState.armies[myCountryId].units = Array.from({ length: 5 }, (_, i) => ({
-      id: uid(), name: `第${i+1}軍`, troops: 0, location: null, ap: 50, orders: [], specialUnits: [], mode: 'idle'
-    }));
-  }
+  if (!gameState.armies[myCountryId]) gameState.armies[myCountryId] = { reserve: 0, units: [] };
+  if (!Array.isArray(gameState.armies[myCountryId].units)) gameState.armies[myCountryId].units = [];
+  gameState.armies[myCountryId].units.forEach(u => {
+    if (!u.id) u.id = uid();
+    if (u.troops == null) u.troops = 0;
+    if (u.ap == null) u.ap = 50;
+    if (!u.mode) u.mode = 'idle';
+    if (!u.specialUnits) u.specialUnits = [];
+    if (!u.atkStrategy) u.atkStrategy = '通常攻勢';
+    if (!u.defStrategy) u.defStrategy = '通常防衛';
+  });
 }
 
 // ============================================================
@@ -848,54 +889,110 @@ function renderArmies() {
   updateBadges();
   ensureArmies();
   const armies = myArmies();
-  const c = myCountry();
   document.getElementById('reserve-display').textContent = armies.reserve || 0;
 
-  document.getElementById('army-cards').innerHTML = armies.units.map((a, i) => {
-    const modeLabel = { idle:'待機', defend:'防衛', move:'移動中', attack:'攻撃中' }[a.mode] || '待機';
-    const modeClass = { idle:'mode-idle', defend:'mode-defend', move:'mode-move', attack:'mode-attack' }[a.mode] || 'mode-idle';
+  const createBtn = `<div style="margin-bottom:12px;">
+    <button class="btn btn-green btn-full" onclick="createArmy()">＋ 新しい軍隊を創設</button>
+  </div>`;
+
+  const cards = armies.units.map(a => {
+    const modeLabel = { idle:'待機', defend:'防衛', move:'移動中' }[a.mode] || '待機';
+    const modeClass = { idle:'mode-idle', defend:'mode-defend', move:'mode-move' }[a.mode] || 'mode-idle';
     const cardClass = a.mode === 'defend' ? 'defending' : a.mode === 'move' ? 'moving' : '';
-    const loc = a.location ? NAMES[a.location] || a.location : '未配置';
     const specialHtml = (a.specialUnits && a.specialUnits.length)
       ? `<div class="special-units">${a.specialUnits.map(u => `<span class="unit-badge">${u}</span>`).join('')}</div>`
       : '';
+    const atkOpts = ATK_STRATEGY_NAMES.map(s => `<option value="${s}" ${a.atkStrategy === s ? 'selected' : ''}>${s}</option>`).join('');
+    const defOpts = DEF_STRATEGY_NAMES.map(s => `<option value="${s}" ${a.defStrategy === s ? 'selected' : ''}>${s}</option>`).join('');
     return `<div class="army-card ${cardClass}">
       <div class="army-header">
         <div class="army-name">${a.name}</div>
         <span class="army-mode ${modeClass}">${modeLabel}</span>
+        <button class="btn btn-sm btn-dark" onclick="deleteArmy('${a.id}')" title="軍隊を解体">解体</button>
       </div>
       <div class="army-stats">
         <span>兵力: <strong>${a.troops}</strong>名</span>
-        <span>位置: <strong>${loc}</strong></span>
+        <span>位置: <strong>${locName(a.location)}</strong></span>
         <span>行動力: <strong>${a.ap}</strong>/50</span>
       </div>
       ${specialHtml}
+      <div class="deploy-row" style="margin-top:8px;">
+        <div style="flex:1;min-width:130px;">
+          <label style="font-size:10px;color:#888;">攻撃作戦</label>
+          <select class="field-input" onchange="setArmyStrategy('${a.id}','atk',this.value)">${atkOpts}</select>
+        </div>
+        <div style="flex:1;min-width:130px;">
+          <label style="font-size:10px;color:#888;">防御作戦</label>
+          <select class="field-input" onchange="setArmyStrategy('${a.id}','def',this.value)">${defOpts}</select>
+        </div>
+      </div>
+      <div style="font-size:10px;color:#666;margin-top:4px;">攻撃時: ${ATK_STRATEGIES[a.atkStrategy] || ''}<br>防御時: ${DEF_STRATEGIES[a.defStrategy] || ''}</div>
       <div class="deploy-row">
-        <input type="number" class="deploy-input" id="deploy-amt-${i}" min="1" placeholder="人数" />
-        <button class="btn btn-sm btn-blue" onclick="deployTroops(${i})">配属する</button>
-        <button class="btn btn-sm ${a.mode === 'defend' ? 'btn-orange' : 'btn-dark'}" onclick="toggleDefend(${i})">
+        <input type="number" class="deploy-input" id="deploy-amt-${a.id}" min="1" placeholder="人数" />
+        <button class="btn btn-sm btn-blue" onclick="deployTroops('${a.id}')">配属する</button>
+        <button class="btn btn-sm ${a.mode === 'defend' ? 'btn-orange' : 'btn-dark'}" onclick="toggleDefend('${a.id}')">
           ${a.mode === 'defend' ? '防衛解除' : '防衛配置'}
         </button>
       </div>
     </div>`;
   }).join('');
+
+  document.getElementById('army-cards').innerHTML = createBtn +
+    (armies.units.length ? cards : '<div style="color:#555;font-size:13px;padding:8px;">軍隊がありません。「新しい軍隊を創設」で追加してください。</div>');
 }
 
-function deployTroops(idx) {
+function getArmyById(id) {
+  const armies = myArmies();
+  return armies && armies.units ? armies.units.find(u => u.id === id) : null;
+}
+
+function createArmy() {
   ensureArmies();
   const armies = myArmies();
-  const amt = parseInt(document.getElementById(`deploy-amt-${idx}`).value);
+  const name = (prompt('新しい軍隊の名前', `第${armies.units.length + 1}軍`) || '').trim();
+  if (!name) return;
+  armies.units.push({
+    id: uid(), name, troops: 0, location: null, ap: 50, orders: [],
+    specialUnits: [], mode: 'idle', atkStrategy: '通常攻勢', defStrategy: '通常防衛'
+  });
+  renderArmies();
+}
+
+function deleteArmy(id) {
+  const a = getArmyById(id);
+  if (!a) return;
+  if (!confirm(`${a.name}を解体しますか？（兵力${a.troops}名は失われます）`)) return;
+  const armies = myArmies();
+  armies.units = armies.units.filter(u => u.id !== id);
+  gameState.pendingOrders = (gameState.pendingOrders || []).filter(o => o.armyId !== id);
+  renderArmies();
+}
+
+function setArmyStrategy(id, kind, value) {
+  const a = getArmyById(id);
+  if (!a) return;
+  if (kind === 'atk') a.atkStrategy = value;
+  else a.defStrategy = value;
+  renderArmies();
+}
+
+function deployTroops(id) {
+  ensureArmies();
+  const armies = myArmies();
+  const a = getArmyById(id);
+  if (!a) return;
+  const amt = parseInt(document.getElementById(`deploy-amt-${id}`).value);
   if (!amt || amt <= 0) { alert('人数を入力してください'); return; }
   if (amt > (armies.reserve || 0)) { alert(`予備兵力が足りません（現在: ${armies.reserve}名）`); return; }
-  armies.units[idx].troops = (armies.units[idx].troops || 0) + amt;
+  a.troops = (a.troops || 0) + amt;
   armies.reserve -= amt;
   renderArmies();
 }
 
-function toggleDefend(idx) {
+function toggleDefend(id) {
   ensureArmies();
-  const armies = myArmies();
-  const a = armies.units[idx];
+  const a = getArmyById(id);
+  if (!a) return;
   if (a.mode === 'defend') {
     a.mode = 'idle';
   } else {
@@ -908,27 +1005,36 @@ function toggleDefend(idx) {
 // ============================================================
 //  HQ
 // ============================================================
+function getSelArmy() {
+  if (!hqSelectedArmyId) return null;
+  const armies = myArmies();
+  return armies && armies.units ? armies.units.find(u => u.id === hqSelectedArmyId) : null;
+}
+
 function renderHQ() {
   updateBadges();
   ensureArmies();
   const armies = myArmies();
 
   const sel = document.getElementById('hq-army-select');
+  const prev = hqSelectedArmyId;
   sel.innerHTML = '<option value="">-- 軍隊を選択 --</option>';
-  armies.units.forEach((a, i) => {
+  armies.units.forEach(a => {
     const opt = document.createElement('option');
-    opt.value = i;
-    opt.textContent = `${a.name}（${a.troops}名 / ${a.location ? NAMES[a.location] : '未配置'}）`;
+    opt.value = a.id;
+    opt.textContent = `${a.name}（${a.troops}名 / ${locName(a.location)}）`;
     sel.appendChild(opt);
   });
+  if (prev && armies.units.some(u => u.id === prev)) sel.value = prev;
+  else hqSelectedArmyId = null;
 
   renderHQOrders();
   renderHQMap();
 }
 
 function onHqArmySelect() {
-  const idx = document.getElementById('hq-army-select').value;
-  hqSelectedArmyIdx = idx !== '' ? parseInt(idx) : null;
+  const v = document.getElementById('hq-army-select').value;
+  hqSelectedArmyId = v || null;
   hqPath = [];
   hqDefendTarget = null;
   updateHQPathDisplay();
@@ -938,11 +1044,10 @@ function onHqArmySelect() {
 
 function updateHQArmyInfo() {
   const el = document.getElementById('hq-army-info');
-  if (hqSelectedArmyIdx === null) { el.innerHTML = ''; return; }
-  ensureArmies();
-  const a = myArmies().units[hqSelectedArmyIdx];
-  const loc = a.location ? NAMES[a.location] : '未配置';
-  el.innerHTML = `兵力: ${a.troops}名　位置: ${loc}　行動力: ${a.ap}/50`;
+  const a = getSelArmy();
+  if (!a) { el.innerHTML = ''; return; }
+  el.innerHTML = `兵力: ${a.troops}名　位置: ${locName(a.location)}　行動力: ${a.ap}/50<br>`
+    + `<span style="color:#888;">攻撃作戦: ${a.atkStrategy} / 防御作戦: ${a.defStrategy}</span>`;
 }
 
 function onOrderTypeChange() {
@@ -952,10 +1057,9 @@ function onOrderTypeChange() {
   hqPath = [];
   hqDefendTarget = null;
 
-  if (t === 'defend' && hqSelectedArmyIdx !== null) {
-    ensureArmies();
-    const a = myArmies().units[hqSelectedArmyIdx];
-    if (a && a.location) {
+  if (t === 'defend') {
+    const a = getSelArmy();
+    if (a && a.location && !isBorder(a.location)) {
       hqDefendTarget = a.location;
       document.getElementById('hq-defend-target').textContent = NAMES[a.location] + '（現在地）';
     } else {
@@ -980,23 +1084,21 @@ function onHQMapClick(prefId) {
     return;
   }
 
-  if (hqSelectedArmyIdx === null) { alert('まず軍隊を選択してください'); return; }
+  const a = getSelArmy();
+  if (!a) { alert('まず軍隊を選択してください'); return; }
   const orderType = document.getElementById('hq-order-type').value;
+  if (orderType === 'defend') return; // 防衛は現在地を自動設定
 
-  if (orderType === 'defend') {
-    // 防衛は現在地を自動設定するため地図クリックは移動/攻撃と同じ扱い
-    return;
-  }
-
-  // move / attack: パスに追加（隣接チェック）
-  const lastPref = hqPath.length > 0 ? hqPath[hqPath.length - 1] : myArmies().units[hqSelectedArmyIdx].location;
+  // 移動：経路に追加（隣接チェック）
+  const armyLoc = (a.location && !isBorder(a.location)) ? a.location : null;
+  const lastPref = hqPath.length > 0 ? hqPath[hqPath.length - 1] : armyLoc;
   if (!lastPref) {
     // 位置未設定: 最初のクリックは自国領土
     if (gameState.territories[prefId] !== myCountryId) {
       alert('出発地は自国の領土を選択してください');
       return;
     }
-    myArmies().units[hqSelectedArmyIdx].location = prefId;
+    a.location = prefId;
     hqPath.push(prefId);
   } else {
     if (prefId === lastPref) return;
@@ -1012,9 +1114,9 @@ function onHQMapClick(prefId) {
 
 function calcAPCost(path) {
   if (!path || path.length < 1) return 0;
-  // 現在地を先頭に追加してコストを計算
-  const a = hqSelectedArmyIdx !== null && myArmies() ? myArmies().units[hqSelectedArmyIdx] : null;
-  const fullPath = (a && a.location) ? [a.location, ...path] : path;
+  const a = getSelArmy();
+  const armyLoc = (a && a.location && !isBorder(a.location)) ? a.location : null;
+  const fullPath = armyLoc ? [armyLoc, ...path] : path;
   if (fullPath.length <= 1) return 0;
   let ap = 0;
   for (let i = 1; i < fullPath.length; i++) {
@@ -1034,9 +1136,10 @@ function updateHQPathDisplay() {
 
   const pathEl = document.getElementById('hq-path-display');
   if (!hqPath.length) { pathEl.textContent = '未設定（地図をクリックして経路を選択）'; return; }
-  const _a = hqSelectedArmyIdx !== null && myArmies() ? myArmies().units[hqSelectedArmyIdx] : null;
-  const displayPath = (_a && _a.location) ? [_a.location, ...hqPath] : hqPath;
-  pathEl.innerHTML = displayPath.map(p => NAMES[p]).join(' <span class="path-arrow">→</span> ');
+  const a = getSelArmy();
+  const armyLoc = (a && a.location && !isBorder(a.location)) ? a.location : null;
+  const displayPath = armyLoc ? [armyLoc, ...hqPath] : hqPath;
+  pathEl.innerHTML = displayPath.map(p => NAMES[p] || p).join(' <span class="path-arrow">→</span> ');
 }
 
 function clearPath() {
@@ -1047,21 +1150,20 @@ function clearPath() {
 }
 
 function addOrder() {
-  if (hqSelectedArmyIdx === null) { alert('軍隊を選択してください'); return; }
-  ensureArmies();
-  const a = myArmies().units[hqSelectedArmyIdx];
+  const a = getSelArmy();
+  if (!a) { alert('軍隊を選択してください'); return; }
   const orderType = document.getElementById('hq-order-type').value;
-  const startTime = parseInt(document.getElementById('hq-start-time').value) || 0;
+  const startRound = Math.max(0, parseInt(document.getElementById('hq-start-time').value) || 0);
 
-  // 防衛中の軍隊は移動・攻撃不可
+  // 防衛中の軍隊は移動命令不可
   if (a.mode === 'defend' && orderType !== 'defend') {
-    alert(`${a.name}は防衛配置中です。移動・攻撃命令は出せません。\n軍隊処理ページで防衛を解除してください。`);
+    alert(`${a.name}は防衛配置中です。移動命令は出せません。\n軍隊処理ページで防衛を解除してください。`);
     return;
   }
 
   // 1軍隊につき命令は1つまで
   const existingOrder = (gameState.pendingOrders || []).find(
-    o => o.countryId === myCountryId && o.armyIdx === hqSelectedArmyIdx
+    o => o.countryId === myCountryId && o.armyId === a.id
   );
   if (existingOrder) {
     alert(`${a.name}にはすでに命令が登録されています。先に削除してから追加してください。`);
@@ -1069,17 +1171,18 @@ function addOrder() {
   }
 
   if (orderType === 'defend') {
-    if (!a.location) { alert('この軍隊はまだ配置されていません'); return; }
+    if (!a.location || isBorder(a.location)) { alert('この軍隊は県に配置されていません'); return; }
     a.mode = 'defend';
-    addPendingOrder({ type: 'defend', armyId: a.id, armyIdx: hqSelectedArmyIdx, defenseAt: a.location, startTime });
+    addPendingOrder({ type: 'defend', armyId: a.id, defenseAt: a.location, startRound });
     hqDefendTarget = null;
   } else {
     if (hqPath.length < 1) { alert('移動先の県を地図から選択してください'); return; }
     const apCost = calcAPCost(hqPath);
-    if (apCost > 50) { alert(`行動力が足りません（必要: ${apCost} / 最大: 50）`); return; }
-    const fullPath = a.location ? [a.location, ...hqPath] : [...hqPath];
-    a.mode = orderType === 'attack' ? 'attack' : 'move';
-    addPendingOrder({ type: orderType, armyId: a.id, armyIdx: hqSelectedArmyIdx, path: fullPath, startTime, apCost });
+    const armyLoc = (a.location && !isBorder(a.location)) ? a.location : null;
+    const fullPath = armyLoc ? [armyLoc, ...hqPath] : [...hqPath];
+    if (fullPath.length < 2) { alert('移動経路が不正です'); return; }
+    a.mode = 'move';
+    addPendingOrder({ type: 'move', armyId: a.id, path: fullPath, startRound, apCost });
     hqPath = [];
   }
 
@@ -1140,12 +1243,12 @@ async function doSpyAction() {
       if (c.id === myCountryId) return;
       const ad = gameState.armies && gameState.armies[c.id];
       if (!ad || !ad.units) return;
-      ad.units.forEach((u, idx) => {
+      ad.units.forEach(u => {
         if (u.location !== spyTargetPref) return;
         let entry = `${c.name}の${u.name}（兵力${u.troops}）`;
-        const order = (gameState.pendingOrders || []).find(o => o.countryId === c.id && o.armyIdx === idx);
+        const order = (gameState.pendingOrders || []).find(o => o.countryId === c.id && o.armyId === u.id);
         if (order) {
-          const tl = {move:'移動', attack:'攻撃', defend:'防衛'}[order.type] || order.type;
+          const tl = {move:'移動', defend:'防衛'}[order.type] || order.type;
           const dest = order.path ? NAMES[order.path[order.path.length - 1]] || order.path[order.path.length - 1] : '';
           entry += `[${tl}${dest ? '→' + dest : ''}]`;
         }
@@ -1210,17 +1313,18 @@ function renderHQOrders() {
     el.innerHTML = '<div style="color:#555;font-size:12px;padding:4px;">命令がありません</div>';
     return;
   }
+  ensureArmies();
+  const units = myArmies().units;
   el.innerHTML = orders.map(o => {
-    const typeLabel = { move:'移動', defend:'防衛', attack:'攻撃' }[o.type] || o.type;
-    const typeClass = { move:'ot-move', defend:'ot-defend', attack:'ot-attack' }[o.type] || '';
-    ensureArmies();
-    const a = myArmies().units[o.armyIdx];
-    const armyName = a ? a.name : '(不明)';
+    const typeLabel = { move:'移動', defend:'防衛' }[o.type] || o.type;
+    const typeClass = { move:'ot-move', defend:'ot-defend' }[o.type] || '';
+    const a = units.find(u => u.id === o.armyId);
+    const armyName = a ? a.name : '(削除済み)';
     let detail = '';
     if (o.type === 'defend') {
       detail = `防衛先: ${NAMES[o.defenseAt] || o.defenseAt}`;
     } else {
-      detail = (o.path || []).map(p => NAMES[p]).join(' → ');
+      detail = (o.path || []).map(p => NAMES[p] || p).join(' → ');
     }
     return `<div class="order-card">
       <div class="order-card-header">
@@ -1229,7 +1333,7 @@ function renderHQOrders() {
         <button class="btn btn-sm btn-dark" onclick="removeOrder('${o.id}')">×</button>
       </div>
       <div class="path-display">${detail}</div>
-      <div style="font-size:11px;color:#666;margin-top:2px;">開始: ${o.startTime}単位時間後${o.apCost ? ` / AP: ${o.apCost}` : ''}</div>
+      <div style="font-size:11px;color:#666;margin-top:2px;">開始: ${o.startRound || 0}ラウンド${o.apCost ? ` / AP: ${o.apCost}` : ''}</div>
     </div>`;
   }).join('');
 }
@@ -1302,7 +1406,7 @@ function updateArmyMarkers() {
       // 自国のみ、または諜報で発見済みの県の敵軍を表示
       if (!isMine && !revealedPrefs.has(army.location)) return;
       if (!byLocation[army.location]) byLocation[army.location] = [];
-      byLocation[army.location].push({ country, army, armyIdx: idx, isMine });
+      byLocation[army.location].push({ country, army, armyNum: idx + 1, isMine });
     });
   });
 
@@ -1315,9 +1419,9 @@ function updateArmyMarkers() {
     const cy = (gRect.top  + gRect.height / 2 - svgRect.top)  / scale + vb.y;
     const count = entries.length;
 
-    entries.forEach(({ country, army, armyIdx, isMine }, i) => {
+    entries.forEach(({ country, army, armyNum, isMine }, i) => {
       const offsetX = count > 1 ? (i - (count - 1) / 2) * 5 : 0;
-      const isSelected = (isMine && armyIdx === hqSelectedArmyIdx);
+      const isSelected = (isMine && army.id === hqSelectedArmyId);
       const r = isSelected ? 3 : 2;
 
       const circle = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
@@ -1338,7 +1442,7 @@ function updateArmyMarkers() {
       label.setAttribute('fill', '#fff');
       label.setAttribute('font-weight', 'bold');
       label.setAttribute('pointer-events', 'none');
-      label.textContent = armyIdx + 1;
+      label.textContent = armyNum;
       markersG.appendChild(label);
 
       if (army.mode === 'defend') {

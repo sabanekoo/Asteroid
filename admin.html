@@ -491,6 +491,53 @@ const EVENTS = [
   { name:'優秀な将軍', type:'all', bonus:1.2, desc:'全能力にボーナスをもたらす将軍' }
 ];
 
+// 作戦（攻撃時）: atk=攻撃力倍率, selfLoss=自軍被害倍率, moveAp=移動AP倍率, forceTake=AP無視で前進
+const ATK_STRATEGIES = {
+  '通常攻勢':   { atk: 1.0,  selfLoss: 1.0, moveAp: 1.0, forceTake: false, desc: 'いつも通りの攻勢' },
+  '強行軍':     { atk: 1.3,  selfLoss: 1.7, moveAp: 1.0, forceTake: true,  desc: '被害無視。AP制限を無視して目の前の県を強引に占領' },
+  '慎重な前進': { atk: 0.9,  selfLoss: 0.5, moveAp: 1.0, forceTake: false, desc: '被害を最小限に抑えて前進' },
+  '電撃戦':     { atk: 1.15, selfLoss: 1.5, moveAp: 0.5, forceTake: false, desc: '被害無視。AP消費を抑えて遠くまで進撃' }
+};
+// 作戦（防御時）: def=守備力倍率, selfLoss=自軍被害倍率, enemyLoss=敵被害倍率, noRetreat=撤退しない, retreatBias=撤退しやすさ
+const DEF_STRATEGIES = {
+  '通常防衛':   { def: 1.0, selfLoss: 1.0, enemyLoss: 1.0, noRetreat: false, retreatBias: 1.0, desc: 'いつも通りの防衛' },
+  '死守':       { def: 0.8, selfLoss: 1.0, enemyLoss: 1.0, noRetreat: true,  retreatBias: 0.0, desc: '滅びるまで撤退しない。基礎能力低下' },
+  '遅滞戦術':   { def: 1.0, selfLoss: 0.6, enemyLoss: 1.4, noRetreat: false, retreatBias: 2.5, desc: '県を明け渡すが敵被害を最大化し自軍被害を軽減' },
+  '人命優先':   { def: 0.8, selfLoss: 0.5, enemyLoss: 1.0, noRetreat: false, retreatBias: 1.5, desc: '基礎能力低下と引き換えに被害を大きく軽減' }
+};
+const ATK_STRATEGY_NAMES = Object.keys(ATK_STRATEGIES);
+const DEF_STRATEGY_NAMES = Object.keys(DEF_STRATEGIES);
+function atkStrat(name) { return ATK_STRATEGIES[name] || ATK_STRATEGIES['通常攻勢']; }
+function defStrat(name) { return DEF_STRATEGIES[name] || DEF_STRATEGIES['通常防衛']; }
+
+// ============================================================
+//  県境ヘルパー（県と県境は別ポジション）
+// ============================================================
+function isBorder(loc) { return typeof loc === 'string' && loc.indexOf('|') >= 0; }
+function makeBorder(a, b) { return [a, b].sort().join('|'); }
+function borderParts(loc) { return loc.split('|'); }
+function otherSide(border, pref) {
+  const [a, b] = borderParts(border);
+  return a === pref ? b : a;
+}
+function locName(loc) {
+  if (!loc) return '未配置';
+  if (isBorder(loc)) {
+    const [a, b] = borderParts(loc);
+    return `${NAMES[a] || a}〜${NAMES[b] || b}間`;
+  }
+  return NAMES[loc] || loc;
+}
+// 県のリスト[A,B,C]を [A, A|B, B, B|C, C] の2ステップ経路に展開
+function expandPath(prefPath) {
+  const full = [];
+  for (let i = 0; i < prefPath.length; i++) {
+    if (i > 0) full.push(makeBorder(prefPath[i - 1], prefPath[i]));
+    full.push(prefPath[i]);
+  }
+  return full;
+}
+
 // ============================================================
 //  ゲーム状態
 // ============================================================
@@ -658,12 +705,16 @@ function startGame() {
   // 初期配置: 各軍隊に兵士10名・ランダム配置、予備兵力50
   gameState.countries.forEach(c => {
     const myPrefs = PREFS.filter(p => gameState.territories[p] === c.id);
-    if (!gameState.armies[c.id]) {
+    if (!gameState.armies[c.id] || !gameState.armies[c.id].units || !gameState.armies[c.id].units.length) {
       gameState.armies[c.id] = { reserve: 50, units: initArmies(c.id) };
     }
     gameState.armies[c.id].reserve = 50;
     gameState.armies[c.id].units.forEach(unit => {
       unit.troops = 10;
+      unit.ap = 50;
+      unit.mode = 'idle';
+      if (!unit.atkStrategy) unit.atkStrategy = '通常攻勢';
+      if (!unit.defStrategy) unit.defStrategy = '通常防衛';
       if (myPrefs.length > 0) {
         unit.location = myPrefs[Math.floor(Math.random() * myPrefs.length)];
       }
@@ -685,7 +736,8 @@ function distributeIncome() {
 
 function initArmies(countryId) {
   return Array.from({ length: 5 }, (_, i) => ({
-    id: uid(), name: `第${i+1}軍`, troops: 0, location: null, ap: 50, orders: [], specialUnits: []
+    id: uid(), name: `第${i+1}軍`, troops: 0, location: null, ap: 50, orders: [],
+    specialUnits: [], mode: 'idle', atkStrategy: '通常攻勢', defStrategy: '通常防衛'
   }));
 }
 
@@ -698,34 +750,34 @@ function cname(cid) {
   return c ? c.name : '(不明)';
 }
 
-function getUnitName(state) {
-  const ad = gameState.armies[state.countryId];
-  return (ad && ad.units[state.armyIdx]) ? ad.units[state.armyIdx].name : '軍';
-}
-
 function buildArmyStates() {
   const states = {};
   gameState.countries.forEach(country => {
     const ad = gameState.armies[country.id];
     if (!ad || !ad.units) return;
-    ad.units.forEach((unit, idx) => {
+    ad.units.forEach(unit => {
       if (!unit.id) unit.id = uid();
       states[unit.id] = {
-        id: unit.id, countryId: country.id, armyIdx: idx,
+        id: unit.id, countryId: country.id, name: unit.name || '軍',
         troops: unit.troops || 0, origTroops: unit.troops || 0,
         location: unit.location, ap: 50,
         mode: unit.mode || 'idle',
+        atkStrategy: unit.atkStrategy || '通常攻勢',
+        defStrategy: unit.defStrategy || '通常防衛',
         specialUnits: [...(unit.specialUnits || [])],
         activeOrder: null, pathStep: 0,
-        inBattle: null, eliminated: false, annihilated: false
+        inBattle: null, role: null, cameFrom: null,
+        movedThisRound: false, frozenUntil: 0,
+        eliminated: false, wonThisTurn: false
       };
     });
   });
   return states;
 }
 
+// 攻撃側ボーナス（特殊部隊 + 攻撃作戦）
 function calcAtkBonus(state) {
-  let b = state.annihilated ? 0.7 : 1;
+  let b = atkStrat(state.atkStrategy).atk;
   (state.specialUnits || []).forEach(n => {
     const ev = EVENTS.find(e => e.name === n);
     if (ev && (ev.type === 'attack' || ev.type === 'all')) b *= ev.bonus;
@@ -733,8 +785,9 @@ function calcAtkBonus(state) {
   return b;
 }
 
+// 守備側ボーナス（県境=遭遇戦は防衛ボーナスなし。県での防衛戦のみ isDefensive）
 function calcDefBonus(state, isDefensive) {
-  let b = (isDefensive ? 1.5 : 1) * (state.annihilated ? 0.7 : 1);
+  let b = (isDefensive ? 1.5 : 1) * defStrat(state.defStrategy).def;
   if (state.mode === 'defend') b *= 1.4; // 防衛配置ボーナス
   (state.specialUnits || []).forEach(n => {
     const ev = EVENTS.find(e => e.name === n);
@@ -756,89 +809,224 @@ function resetGame() {
   saveToGist();
 }
 
-function doCombatStep(atk, def, isDefensive) {
-  if (atk.troops <= 0 || def.troops <= 0) return { ac: 0, dc: 0 };
-  const ap = atk.troops * (3 + Math.random() * 3) * calcAtkBonus(atk);
-  const dp = def.troops * (3 + Math.random() * 3) * calcDefBonus(def, isDefensive);
-  const tot = ap + dp;
-  return {
-    ac: Math.max(0, Math.floor(atk.troops * (dp / tot) * 0.15)),
-    dc: Math.max(0, Math.floor(def.troops * (ap / tot) * 0.15))
-  };
-}
-
-function shouldRetreat(state) {
-  if (state.annihilated || state.troops <= 0) return false;
-  const lossRate = 1 - state.troops / Math.max(1, state.origTroops);
-  return Math.random() < Math.max(0, (lossRate - 0.25) * 1.2);
-}
-
-function retreatDest(state, states) {
-  const adj = ADJACENCY[state.location] || [];
-  const friendly = adj.filter(p => {
-    if (gameState.territories[p] !== state.countryId) return false;
-    // 撤退先に敵軍がいる場合は撤退不可
-    return !Object.values(states).some(s =>
-      s.countryId !== state.countryId && s.location === p && !s.eliminated
-    );
+// 攻撃側軍に対し、敵防御軍の enemyLoss 倍率の最大値（遅滞戦術=1.4 など）
+function maxEnemyDefEnemyLoss(b, atkSt, states) {
+  let m = 1.0;
+  b.parts.forEach(p => {
+    const st = states[p.id];
+    if (!st || st.eliminated || st.inBattle !== b.id) return;
+    if (st.countryId === atkSt.countryId) return;
+    if (p.role === 'defender') m = Math.max(m, defStrat(st.defStrategy).enemyLoss);
   });
-  return friendly.length ? friendly[Math.floor(Math.random() * friendly.length)] : null;
+  return m;
 }
 
-function finalizeBattle(battle, winner, loser, log, states) {
-  battle.resolved = true;
-  winner.inBattle = null;
-  loser.inBattle = null;
+// 戦闘を1ステップ処理：参加軍を国別に集計し敵勢力比で損害を与える
+function doBattleStep(b, states, log) {
+  const parts = b.parts.filter(p => {
+    const st = states[p.id];
+    return st && !st.eliminated && st.inBattle === b.id;
+  });
+  if (!parts.length) { b.resolved = true; return; }
+  const countrySet = new Set(parts.map(p => states[p.id].countryId));
+  if (countrySet.size < 2) return; // 1国のみ → phase5で決着処理
 
-  const retreat = retreatDest(loser, states);
+  // 各軍の戦闘力
+  const power = {};
+  let total = 0;
+  parts.forEach(p => {
+    const st = states[p.id];
+    const roll = 3 + Math.random() * 3;
+    const bonus = (p.role === 'defender')
+      ? calcDefBonus(st, !isBorder(b.location)) // 県での防衛のみ防衛戦ボーナス
+      : calcAtkBonus(st);
+    power[p.id] = Math.max(0.01, st.troops * roll * bonus);
+    total += power[p.id];
+  });
+  if (total <= 0) { b.resolved = true; return; }
 
-  if (loser.troops <= 0) {
-    loser.eliminated = true;
-    log.push({ type: 'battle', text: `${cname(loser.countryId)}の${getUnitName(loser)}は壊滅` });
-  } else if (!retreat && !loser.annihilated) {
-    // 退路なし → 殲滅戦
-    loser.annihilated = true;
-    loser.ap = 0;
-    log.push({ type: 'battle', text: `【殲滅戦】${cname(loser.countryId)}の${getUnitName(loser)}は退路なし！${NAMES[loser.location]}で殲滅戦突入！` });
-    let steps = 0;
-    while (loser.troops > 0 && winner.troops > 0 && steps < 30) {
-      const { ac, dc } = doCombatStep(winner, loser, battle.isDefensive);
-      winner.troops -= ac; loser.troops -= dc; steps++;
-    }
-    if (loser.troops <= 0) {
-      loser.eliminated = true;
-      log.push({ type: 'battle', text: `${cname(loser.countryId)}の${getUnitName(loser)}は${NAMES[loser.location]}で殲滅` });
+  // 戦闘中ランダムイベント（20%）
+  if (Math.random() < 0.20) applyBattleEvent(b, parts, states, log);
+
+  // 損害計算（敵勢力比 × 0.15 × 作戦倍率）
+  parts.forEach(p => {
+    const st = states[p.id];
+    if (st.eliminated) return;
+    let allyPw = 0;
+    parts.forEach(q => {
+      const qs = states[q.id];
+      if (qs.countryId === st.countryId) allyPw += power[q.id];
+    });
+    const enemyPw = total - allyPw;
+    let loss = st.troops * (enemyPw / total) * 0.15;
+    if (p.role === 'attacker') {
+      loss *= atkStrat(st.atkStrategy).selfLoss;
+      loss *= maxEnemyDefEnemyLoss(b, st, states);
     } else {
-      // 死守成功：敗者が逆転
-      log.push({ type: 'battle', text: `【死守】${cname(loser.countryId)}の${getUnitName(loser)}は${NAMES[loser.location]}を死守！` });
-      winner.inBattle = null; loser.inBattle = null;
-      return; // 領土変更なし
+      loss *= defStrat(st.defStrategy).selfLoss;
     }
-  } else {
-    const dest = retreat || loser.location;
-    loser.location = dest;
-    loser.mode = 'idle'; loser.activeOrder = null;
-    log.push({ type: 'battle', text: `${cname(loser.countryId)}の${getUnitName(loser)}は${NAMES[dest]}へ撤退` });
+    st._loss = Math.max(0, Math.floor(loss));
+  });
+
+  // 損害がすべて0に丸められた場合、最も劣勢な軍に1の損害を与えて戦闘の停滞を防ぐ
+  let totalDmg = 0;
+  parts.forEach(p => { const st = states[p.id]; if (!st.eliminated) totalDmg += (st._loss || 0); });
+  if (totalDmg === 0) {
+    let weakest = null;
+    parts.forEach(p => {
+      const st = states[p.id];
+      if (st.eliminated) return;
+      if (!weakest || st.troops < weakest.troops) weakest = st;
+    });
+    if (weakest) weakest._loss = 1;
   }
 
-  // 勝者が領土を占領
-  if (battle.type === 'encounter') {
-    const wo = winner.activeOrder;
-    if (wo && winner.pathStep + 1 < (wo.path || []).length) {
-      const dest = wo.path[winner.pathStep + 1];
-      const prev = gameState.territories[dest];
-      gameState.territories[dest] = winner.countryId;
-      log.push({ type: 'capture', text: `${cname(winner.countryId)}が${NAMES[dest]}を占領！` + (prev ? `（旧: ${cname(prev)}）` : '') });
-      winner.location = dest; winner.pathStep++;
+  // 損害適用
+  const summary = [];
+  parts.forEach(p => {
+    const st = states[p.id];
+    const loss = st._loss || 0; st._loss = 0;
+    if (st.eliminated) return;
+    st.troops -= loss;
+    if (st.troops <= 0) {
+      st.troops = 0; st.eliminated = true; st.inBattle = null;
+      summary.push(`${cname(st.countryId)}の${st.name}: 壊滅`);
+    } else {
+      summary.push(`${cname(st.countryId)}の${st.name}: -${loss}（残${st.troops}）`);
     }
-  } else if (battle.type === 'defensive' && winner === battle.atk) {
-    const prev = gameState.territories[winner.location];
-    if (prev !== winner.countryId) {
-      gameState.territories[winner.location] = winner.countryId;
-      log.push({ type: 'capture', text: `${cname(winner.countryId)}が${NAMES[winner.location]}を占領！` });
-    }
+  });
+  if (summary.length) log.push({ type: 'battle', text: `[${locName(b.location)}] ${summary.join(' / ')}` });
+}
+
+// 戦闘中ランダムイベント
+function applyBattleEvent(b, parts, states, log) {
+  const side = states[parts[Math.floor(Math.random() * parts.length)].id];
+  if (!side || side.eliminated) return;
+  const enemies = parts.map(p => states[p.id]).filter(s => s && !s.eliminated && s.countryId !== side.countryId);
+  if (!enemies.length) return;
+  const other = enemies[Math.floor(Math.random() * enemies.length)];
+  const evRoll = Math.floor(Math.random() * 6);
+  if (evRoll === 0) {
+    const dmg = Math.ceil(other.troops * 0.12), self = Math.ceil(side.troops * 0.05);
+    other.troops = Math.max(0, other.troops - dmg); side.troops = Math.max(0, side.troops - self);
+    log.push({ type: 'event', text: `[戦闘イベント] ${cname(side.countryId)}の${side.name}が勇猛突撃！${cname(other.countryId)}-${dmg}名、自軍-${self}名` });
+  } else if (evRoll === 1) {
+    const dmg = Math.ceil(other.troops * 0.09);
+    other.troops = Math.max(0, other.troops - dmg);
+    log.push({ type: 'event', text: `[戦闘イベント] ${cname(side.countryId)}の${side.name}が夜陰の奇襲！${cname(other.countryId)}-${dmg}名` });
+  } else if (evRoll === 2) {
+    const heal = Math.ceil(side.troops * 0.08);
+    side.troops += heal;
+    log.push({ type: 'event', text: `[戦闘イベント] ${cname(side.countryId)}の${side.name}が士気高揚！兵力+${heal}名回復` });
+  } else if (evRoll === 3) {
+    const dmg = Math.ceil(other.troops * 0.15);
+    other.troops = Math.max(0, other.troops - dmg);
+    log.push({ type: 'event', text: `[戦闘イベント] ${cname(side.countryId)}の${side.name}が精密砲撃！${cname(other.countryId)}-${dmg}名の大損害！` });
+  } else if (evRoll === 4) {
+    const dmg = Math.ceil(other.troops * 0.07);
+    other.troops = Math.max(0, other.troops - dmg);
+    log.push({ type: 'event', text: `[戦闘イベント] ${cname(side.countryId)}の${side.name}が補給線を遮断！${cname(other.countryId)}-${dmg}名` });
+  } else {
+    const dmg = Math.ceil(side.troops * 0.08);
+    side.troops = Math.max(0, side.troops - dmg);
+    log.push({ type: 'event', text: `[戦闘イベント] ${cname(side.countryId)}の${side.name}に逃亡兵発生！-${dmg}名` });
   }
-  log.push({ type: 'battle', text: `【戦闘終了】${battle.displayLoc} → ${cname(winner.countryId)}の勝利` });
+  [side, other].forEach(st => {
+    if (st.troops <= 0) { st.troops = 0; st.eliminated = true; st.inBattle = null; }
+  });
+}
+
+// 撤退先の県（隣接する自国領で敵軍がいない県。県境にいる場合は両端の県）
+function retreatDestPref(st, states) {
+  const adjPrefs = isBorder(st.location) ? borderParts(st.location) : (ADJACENCY[st.location] || []);
+  const valid = p => {
+    if (gameState.territories[p] !== st.countryId) return false;
+    return !Object.values(states).some(s =>
+      !s.eliminated && s.countryId !== st.countryId && s.location === p
+    );
+  };
+  const cands = adjPrefs.filter(valid);
+  if (!cands.length) return null;
+  if (st.cameFrom && cands.includes(st.cameFrom)) return st.cameFrom;
+  return cands[Math.floor(Math.random() * cands.length)];
+}
+
+// 現在地→撤退先の2ステップ経路を作る
+function buildRetreatPath(from, dest) {
+  if (isBorder(from)) return [from, dest];
+  return [from, makeBorder(from, dest), dest];
+}
+
+// 軍を撤退状態にする（AP無制限・80%で前進）
+function startRetreat(st, dest, log) {
+  st.inBattle = null;
+  st.role = null;
+  st.mode = 'idle';
+  st.activeOrder = { fullPath: buildRetreatPath(st.location, dest), isRetreat: true, startRound: 0 };
+  st.pathStep = 0;
+  log.push({ type: 'battle', text: `${cname(st.countryId)}の${st.name}は${NAMES[dest] || dest}方面へ撤退` });
+}
+
+// 戦闘の決着判定／撤退・進軍予定のセット（毎ラウンド phase5 で実行）
+function resolveBattleRound(b, states, log, round) {
+  const alive = b.parts.map(p => ({ p, st: states[p.id] }))
+    .filter(x => x.st && !x.st.eliminated && x.st.inBattle === b.id);
+  if (!alive.length) {
+    b.resolved = true;
+    log.push({ type: 'battle', text: `【戦闘終了】${locName(b.location)}は全軍壊滅` });
+    return;
+  }
+  const byCountry = {};
+  alive.forEach(x => (byCountry[x.st.countryId] = byCountry[x.st.countryId] || []).push(x));
+  const countries = Object.keys(byCountry);
+
+  // 1国だけ残った → 決着
+  if (countries.length === 1) {
+    b.resolved = true;
+    byCountry[countries[0]].forEach(({ st }) => {
+      st.inBattle = null; st.role = null;
+      st.wonThisTurn = true;
+      st.frozenUntil = round + 1; // 勝利した兵は1ラウンド動かない
+      if (isBorder(b.location)) {
+        // 県境戦の勝者：県へ押し切る進軍予定
+        const target = st.headingTo || otherSide(b.location, st.cameFrom || borderParts(b.location)[0]);
+        if (target) {
+          st.activeOrder = { fullPath: [b.location, target], isRetreat: false, startRound: 0 };
+          st.pathStep = 0;
+        }
+      }
+    });
+    log.push({ type: 'battle', text: `【戦闘終了】${locName(b.location)} → ${cname(countries[0])}の勝利` });
+    return;
+  }
+
+  // 複数国が残存 → 劣勢国の撤退判定
+  const totals = {};
+  countries.forEach(c => totals[c] = byCountry[c].reduce((s, x) => s + x.st.troops, 0));
+  const maxTotal = Math.max.apply(null, Object.values(totals));
+  countries.forEach(c => {
+    if (totals[c] >= maxTotal) return; // 最強国は撤退しない
+    byCountry[c].forEach(({ st }) => {
+      const ds = defStrat(st.defStrategy);
+      if (ds.noRetreat) return; // 死守：撤退しない
+      const dest = retreatDestPref(st, states);
+      if (!dest) return; // 退路なし → 殲滅戦（戦闘続行）
+      const lossRate = 1 - st.troops / Math.max(1, st.origTroops);
+      const chance = Math.min(0.95, Math.max(0.15, (lossRate + 0.10) * 1.3) * ds.retreatBias);
+      if (Math.random() < chance) startRetreat(st, dest, log);
+    });
+  });
+}
+
+// SAFETYに達した場合の戦闘打ち切り
+function forceResolveBattle(b, states, log) {
+  if (b.resolved) return;
+  b.resolved = true;
+  b.parts.forEach(p => {
+    const st = states[p.id];
+    if (st && st.inBattle === b.id) { st.inBattle = null; st.role = null; }
+  });
+  log.push({ type: 'battle', text: `【戦闘打ち切り】${locName(b.location)}（処理上限到達）` });
 }
 
 async function processTurn() {
@@ -862,255 +1050,211 @@ async function processTurn() {
   const log = [];
   const processedTurn = gameState.turn;
 
-  // 1. 軍隊状態を構築
   status.textContent = '準備中...';
-  await sleep(100);
+  await sleep(50);
   const states = buildArmyStates();
 
-  // 2. ランダムイベント（各国20%）
+  // 1. ランダムイベント（各国20%で特殊部隊が出現）
   gameState.countries.forEach(c => {
     if (Math.random() < 0.20) {
       const ev = EVENTS[Math.floor(Math.random() * EVENTS.length)];
       const ad = gameState.armies[c.id];
-      if (!ad || !ad.units) return;
-      const unitIdx = Math.floor(Math.random() * ad.units.length);
-      const unit = ad.units[unitIdx];
+      if (!ad || !ad.units || !ad.units.length) return;
+      const unit = ad.units[Math.floor(Math.random() * ad.units.length)];
       if (!unit.specialUnits) unit.specialUnits = [];
       if (unit.specialUnits.length < 3) {
         unit.specialUnits.push(ev.name);
-        const st = Object.values(states).find(s => s.id === unit.id);
+        const st = states[unit.id];
         if (st) st.specialUnits.push(ev.name);
         log.push({ type: 'event', text: `【イベント】${c.name}の${unit.name}に「${ev.name}」出現！${ev.desc}` });
       }
     }
   });
 
-  // 3. 防衛命令を即時適用
+  // 2. 命令を適用
   const turnOrders = (gameState.pendingOrders || []).filter(o => o.turn === processedTurn);
-  turnOrders.forEach(order => {
-    if (order.type !== 'defend') return;
-    const st = Object.values(states).find(s => s.id === order.armyId);
-    if (!st) return;
-    st.mode = 'defend'; st.location = order.defenseAt;
+  // 防衛命令
+  turnOrders.forEach(o => {
+    if (o.type !== 'defend') return;
+    const st = states[o.armyId];
+    if (!st || st.eliminated) return;
+    st.mode = 'defend';
+    if (o.defenseAt) st.location = o.defenseAt;
+  });
+  // 移動命令（県リスト → 2ステップ経路に展開）
+  turnOrders.forEach(o => {
+    if (o.type === 'defend') return;
+    const st = states[o.armyId];
+    if (!st || st.eliminated) return;
+    let pp = (o.path || []).filter(p => p && !isBorder(p));
+    if (pp.length < 2) return;
+    // 出発地を軍の現在地に合わせる
+    if (st.location && !isBorder(st.location) && pp[0] !== st.location &&
+        (ADJACENCY[st.location] || []).includes(pp[0])) {
+      pp = [st.location, ...pp];
+    }
+    st.activeOrder = { fullPath: expandPath(pp), isRetreat: false, startRound: o.startRound || 0 };
+    st.pathStep = 0;
+    st.location = st.activeOrder.fullPath[0];
+    st.mode = 'move';
   });
 
-  // 4. 時間単位シミュレーション（0〜45、1刻み）
-  status.textContent = '時間シミュレーション処理中...';
+  // 3. ラウンドループ（全兵の操作が終わるまで繰り返す）
+  status.textContent = 'ラウンド処理中...';
   const battles = [];
+  let round = 0;
+  const SAFETY = 3000;
+  while (round < SAFETY) {
+    round++;
 
-  for (let t = 0; t <= 45; t++) {
-    // この時間に開始する移動・攻撃命令を起動
-    turnOrders.filter(o => o.startTime === t && o.type !== 'defend').forEach(order => {
-      const st = Object.values(states).find(s => s.id === order.armyId);
-      if (!st || st.eliminated) return;
-      if (order.path && order.path.length > 0) st.location = order.path[0];
-      st.activeOrder = order; st.pathStep = 0;
-    });
+    // --- PHASE 1: 移動を予定している兵をすべて1ステップ進める ---
+    Object.values(states).forEach(st => { st.movedThisRound = false; });
+    for (const st of Object.values(states)) {
+      if (st.eliminated || st.inBattle || !st.activeOrder) continue;
+      if (st.frozenUntil >= round) continue; // 勝利後の1ラウンド休止
+      const ao = st.activeOrder;
+      if (ao.startRound >= round) continue;  // 開始ラウンド待ち
+      const fp = ao.fullPath;
+      if (st.pathStep + 1 >= fp.length) { st.activeOrder = null; continue; }
+      const cur = fp[st.pathStep];
+      const next = fp[st.pathStep + 1];
 
-    // 移動可能な軍隊を処理
-    const moving = Object.values(states).filter(
-      s => s.activeOrder && !s.inBattle && !s.eliminated && s.ap > 0
-    );
-
-    for (const army of moving) {
-      if (army.inBattle || army.eliminated) continue;
-      const path = army.activeOrder.path || [];
-      const nextStep = army.pathStep + 1;
-      if (nextStep >= path.length) { army.activeOrder = null; continue; }
-
-      const from = path[army.pathStep];
-      const to   = path[nextStep];
-      const isOwn = gameState.territories[to] === army.countryId;
-      const apCost = isOwn ? 5 : 20;
-
-      if (army.ap < apCost) {
-        log.push({ type: 'info', text: `${cname(army.countryId)}の${getUnitName(army)}はAP不足で${NAMES[from] || from}に停止` });
-        army.activeOrder = null; continue;
-      }
-
-      // 遭遇戦チェック：同じ県境を逆方向に移動する敵
-      const counter = Object.values(states).find(s =>
-        s.id !== army.id && s.countryId !== army.countryId &&
-        s.activeOrder && !s.inBattle && !s.eliminated &&
-        s.activeOrder.path && s.activeOrder.path[s.pathStep] === to &&
-        (s.activeOrder.path[s.pathStep + 1] === from)
-      );
-      if (counter) {
-        army.ap -= 1; counter.ap -= 1;
-        army.pathStep = nextStep; army.location = to;
-        counter.pathStep++; counter.location = from;
-        const bid = uid();
-        const b = {
-          id: bid, type: 'encounter',
-          displayLoc: `${NAMES[from] || from}〜${NAMES[to] || to}間`,
-          atk: army, def: counter, isDefensive: false, resolved: false
-        };
-        battles.push(b);
-        army.inBattle = bid; counter.inBattle = bid;
-        log.push({ type: 'battle', text: `【遭遇戦 T=${t}】${NAMES[from] || from}〜${NAMES[to] || to}の県境で${cname(army.countryId)}の${getUnitName(army)}（兵力${army.troops}）と${cname(counter.countryId)}の${getUnitName(counter)}（兵力${counter.troops}）が遭遇！` });
-        const { ac, dc } = doCombatStep(army, counter, false);
-        army.troops -= ac; counter.troops -= dc;
-        log.push({ type: 'battle', text: `[T=${t} 遭遇戦 ${NAMES[from] || from}〜${NAMES[to] || to}] ${cname(army.countryId)}の${getUnitName(army)}: -${ac}（残${army.troops}） / ${cname(counter.countryId)}の${getUnitName(counter)}: -${dc}（残${counter.troops}）` });
-        continue;
-      }
-
-      // 防衛戦チェック：目的地に防衛中の敵軍がいる
-      const defender = Object.values(states).find(s =>
-        s.id !== army.id && s.countryId !== army.countryId &&
-        s.mode === 'defend' && s.location === to &&
-        !s.inBattle && !s.eliminated
-      );
-      if (defender) {
-        army.ap -= 1; defender.ap -= 1;
-        army.pathStep = nextStep; army.location = to;
-        const bid = uid();
-        const b = {
-          id: bid, type: 'defensive',
-          displayLoc: NAMES[to] || to,
-          atk: army, def: defender, isDefensive: true, resolved: false
-        };
-        battles.push(b);
-        army.inBattle = bid; defender.inBattle = bid;
-        log.push({ type: 'battle', text: `【防衛戦 T=${t}】${cname(army.countryId)}の${getUnitName(army)}が${NAMES[to] || to}に進入！${cname(defender.countryId)}の${getUnitName(defender)}（防衛配置、兵力${defender.troops}）が迎撃！` });
-        const { ac, dc } = doCombatStep(army, defender, true);
-        army.troops -= ac; defender.troops -= dc;
-        log.push({ type: 'battle', text: `[T=${t} 防衛戦 ${NAMES[to] || to}] ${cname(army.countryId)}の${getUnitName(army)}: ${ac}損（残${army.troops}） / ${cname(defender.countryId)}の${getUnitName(defender)}: ${dc}損（残${defender.troops}）` });
-        continue;
-      }
-
-      // 棒立ち敵軍チェック：目的地に停止中の敵軍がいる
-      const idleEnemy = Object.values(states).find(s =>
-        s.id !== army.id && s.countryId !== army.countryId &&
-        s.mode !== 'defend' && s.location === to &&
-        !s.inBattle && !s.eliminated
-      );
-      if (idleEnemy) {
-        army.ap -= 1; idleEnemy.ap -= 1;
-        army.pathStep = nextStep; army.location = to;
-        const bid = uid();
-        const b = {
-          id: bid, type: 'contact',
-          displayLoc: NAMES[to] || to,
-          atk: army, def: idleEnemy, isDefensive: false, resolved: false
-        };
-        battles.push(b);
-        army.inBattle = bid; idleEnemy.inBattle = bid;
-        log.push({ type: 'battle', text: `【接敵 T=${t}】${cname(army.countryId)}の${getUnitName(army)}が${NAMES[to] || to}の${cname(idleEnemy.countryId)}の${getUnitName(idleEnemy)}（兵力${idleEnemy.troops}）に接敵！` });
-        const { ac, dc } = doCombatStep(army, idleEnemy, false);
-        army.troops -= ac; idleEnemy.troops -= dc;
-        log.push({ type: 'battle', text: `[T=${t} 接敵 ${NAMES[to] || to}] ${cname(army.countryId)}の${getUnitName(army)}: ${ac}損（残${army.troops}） / ${cname(idleEnemy.countryId)}の${getUnitName(idleEnemy)}: ${dc}損（残${idleEnemy.troops}）` });
-        continue;
-      }
-
-      // 通常移動
-      army.ap -= apCost;
-      army.pathStep = nextStep;
-      army.location = to;
-      log.push({ type: 'move', text: `T${t}: ${cname(army.countryId)}の${getUnitName(army)}が${NAMES[from] || from}から${NAMES[to] || to}へ移動（AP残: ${army.ap}）` });
-      if (!isOwn) {
-        const prev = gameState.territories[to];
-        gameState.territories[to] = army.countryId;
-        log.push({ type: 'capture', text: `${cname(army.countryId)}の${getUnitName(army)}が${NAMES[to] || to}を占領！` + (prev ? `（旧: ${cname(prev)}）` : '') });
-      }
-    }
-
-    // 継続中の戦闘を1単位時間分処理
-    for (const b of battles.filter(x => !x.resolved)) {
-      if (b.atk.troops <= 0) { finalizeBattle(b, b.def, b.atk, log, states); continue; }
-      if (b.def.troops <= 0) { finalizeBattle(b, b.atk, b.def, log, states); continue; }
-      if (b.atk.ap < 1) { finalizeBattle(b, b.def, b.atk, log, states); continue; }
-      if (b.def.ap < 1) { finalizeBattle(b, b.atk, b.def, log, states); continue; }
-
-      b.atk.ap -= 1; b.def.ap -= 1;
-
-      // 戦闘中イベント（20%の確率）
-      if (Math.random() < 0.20) {
-        const evRoll = Math.floor(Math.random() * 6);
-        const side = Math.random() < 0.5 ? b.atk : b.def;
-        const other = side === b.atk ? b.def : b.atk;
-        if (evRoll === 0) {
-          // 勇猛突撃
-          const bonus = Math.ceil(other.troops * 0.12);
-          const selfLoss = Math.ceil(side.troops * 0.05);
-          other.troops = Math.max(0, other.troops - bonus);
-          side.troops = Math.max(0, side.troops - selfLoss);
-          log.push({ type: 'event', text: `[戦闘イベント T=${t}] ${cname(side.countryId)}の${getUnitName(side)}が勇猛果敢に突撃！${cname(other.countryId)}: -${bonus}名の損害、${cname(side.countryId)}も-${selfLoss}名` });
-        } else if (evRoll === 1) {
-          // 奇襲成功
-          const apLoss = 10;
-          const bonusDmg = Math.ceil(other.troops * 0.07);
-          other.ap = Math.max(0, other.ap - apLoss);
-          other.troops = Math.max(0, other.troops - bonusDmg);
-          log.push({ type: 'event', text: `[戦闘イベント T=${t}] ${cname(side.countryId)}の${getUnitName(side)}が夜陰に乗じた奇襲攻撃！${cname(other.countryId)}: 行動力-${apLoss}、兵力-${bonusDmg}名` });
-        } else if (evRoll === 2) {
-          // 士気高揚・回復
-          const healed = Math.ceil(side.troops * 0.08);
-          side.troops += healed;
-          log.push({ type: 'event', text: `[戦闘イベント T=${t}] ${cname(side.countryId)}の${getUnitName(side)}が鼓舞で士気高揚！兵力+${healed}名回復` });
-        } else if (evRoll === 3) {
-          // 精密砲撃
-          const artDmg = Math.ceil(other.troops * 0.15);
-          other.troops = Math.max(0, other.troops - artDmg);
-          log.push({ type: 'event', text: `[戦闘イベント T=${t}] ${cname(side.countryId)}の${getUnitName(side)}が精密砲撃を実施！${cname(other.countryId)}: -${artDmg}名の大損害！` });
-        } else if (evRoll === 4) {
-          // 補給線遮断
-          const apCut = 15;
-          other.ap = Math.max(0, other.ap - apCut);
-          log.push({ type: 'event', text: `[戦闘イベント T=${t}] ${cname(side.countryId)}の${getUnitName(side)}が補給線を遮断！${cname(other.countryId)}の行動力-${apCut}` });
-        } else {
-          // 逃亡兵発生
-          const desertion = Math.ceil(side.troops * 0.08);
-          side.troops = Math.max(0, side.troops - desertion);
-          log.push({ type: 'event', text: `[戦闘イベント T=${t}] ${cname(side.countryId)}の${getUnitName(side)}に逃亡兵発生！-${desertion}名が離散` });
+      if (ao.isRetreat) {
+        // 撤退：AP無制限、80%の確率で1ステップ前進
+        if (Math.random() < 0.80) {
+          st.pathStep++;
+          if (isBorder(next)) { st.cameFrom = cur; st.headingTo = fp[st.pathStep + 1] || null; }
+          st.location = next;
+          st.movedThisRound = true;
         }
-        if (b.atk.troops <= 0) { finalizeBattle(b, b.def, b.atk, log, states); continue; }
-        if (b.def.troops <= 0) { finalizeBattle(b, b.atk, b.def, log, states); continue; }
+        continue;
       }
 
-      const { ac, dc } = doCombatStep(b.atk, b.def, b.isDefensive);
-      b.atk.troops -= ac; b.def.troops -= dc;
-      log.push({ type: 'battle', text: `[T=${t} ${b.displayLoc}] ${cname(b.atk.countryId)}の${getUnitName(b.atk)}: -${ac}（残${b.atk.troops}名） / ${cname(b.def.countryId)}の${getUnitName(b.def)}: -${dc}（残${b.def.troops}名）` });
-
-      if (b.atk.troops <= 0) { finalizeBattle(b, b.def, b.atk, log, states); continue; }
-      if (b.def.troops <= 0) { finalizeBattle(b, b.atk, b.def, log, states); continue; }
-      if (shouldRetreat(b.def)) { finalizeBattle(b, b.atk, b.def, log, states); continue; }
-      if (shouldRetreat(b.atk)) { finalizeBattle(b, b.def, b.atk, log, states); continue; }
+      // 通常移動：県→県境のステップでAPを消費（県境→県は無料）
+      if (!isBorder(cur) && isBorder(next)) {
+        const destPref = otherSide(next, cur);
+        const isOwn = gameState.territories[destPref] === st.countryId;
+        const as = atkStrat(st.atkStrategy);
+        const cost = Math.max(1, Math.round((isOwn ? 5 : 20) * as.moveAp));
+        if (st.ap < cost) {
+          // 強行軍：AP不足でも一度だけ目の前の1県へ強引に突入（APを使い切る）
+          if (as.forceTake && !st.forcedMoveUsed) {
+            st.forcedMoveUsed = true;
+            st.ap = 0;
+          } else {
+            log.push({ type: 'info', text: `${cname(st.countryId)}の${st.name}はAP不足で${locName(cur)}に停止` });
+            st.activeOrder = null;
+            continue;
+          }
+        } else {
+          st.ap = Math.max(0, st.ap - cost);
+        }
+        st.cameFrom = cur; st.headingTo = destPref;
+        st.pathStep++; st.location = next; st.movedThisRound = true;
+      } else {
+        // 県境→県（無料）
+        st.pathStep++; st.location = next; st.movedThisRound = true;
+      }
     }
 
-    await sleep(20);
+    // --- PHASE 2: 同じポジション（県/県境）で敵と被ったら戦闘開始 ---
+    const byLoc = {};
+    for (const st of Object.values(states)) {
+      if (st.eliminated || !st.location) continue;
+      (byLoc[st.location] = byLoc[st.location] || []).push(st);
+    }
+    for (const loc in byLoc) {
+      const group = byLoc[loc];
+      if (new Set(group.map(s => s.countryId)).size < 2) continue;
+      let battle = battles.find(x => !x.resolved && x.location === loc);
+      if (!battle) {
+        battle = { id: uid(), location: loc, parts: [], resolved: false };
+        battles.push(battle);
+        const names = group.map(s => `${cname(s.countryId)}の${s.name}(兵力${s.troops})`).join(' vs ');
+        log.push({ type: 'battle', text: `【戦闘開始 R${round}】${locName(loc)}：${names}` });
+      }
+      group.forEach(st => {
+        if (st.inBattle === battle.id) return;
+        st.activeOrder = null; // 戦闘中は移動停止
+        // 撤退失敗で残留した軍など、既にparts内にあれば再登録せず復帰させる
+        const existing = battle.parts.find(pp => pp.id === st.id);
+        if (existing) {
+          st.inBattle = battle.id;
+          st.role = existing.role;
+          return;
+        }
+        const role = isBorder(loc) ? 'attacker' : (st.movedThisRound ? 'attacker' : 'defender');
+        battle.parts.push({ id: st.id, role });
+        st.inBattle = battle.id;
+        st.role = role;
+      });
+    }
+
+    // --- PHASE 3: 敵がおらず県（県境でない）にいる軍は占領 ---
+    for (const st of Object.values(states)) {
+      if (st.eliminated || st.inBattle || !st.location || isBorder(st.location)) continue;
+      if (gameState.territories[st.location] !== st.countryId) {
+        const prev = gameState.territories[st.location];
+        gameState.territories[st.location] = st.countryId;
+        log.push({ type: 'capture', text: `${cname(st.countryId)}の${st.name}が${NAMES[st.location] || st.location}を占領！` + (prev ? `（旧: ${cname(prev)}）` : '（中立）') });
+      }
+    }
+
+    // --- PHASE 4: 戦闘を1ステップ処理 ---
+    for (const b of battles) {
+      if (b.resolved) continue;
+      doBattleStep(b, states, log);
+    }
+
+    // --- PHASE 5: 戦闘結果に応じ撤退/進軍予定をセット、決着判定 ---
+    for (const b of battles) {
+      if (b.resolved) continue;
+      resolveBattleRound(b, states, log, round);
+    }
+
+    // --- 終了判定：移動・戦闘・凍結のいずれも残っていなければ終了 ---
+    const pending = Object.values(states).some(st =>
+      !st.eliminated && (st.inBattle || st.activeOrder || st.frozenUntil >= round)
+    );
+    if (!pending) break;
+    if (round % 30 === 0) { status.textContent = `ラウンド処理中... (R${round})`; await sleep(0); }
   }
 
-  // 5. ターン終了時に未決着の戦闘を兵力差で裁定
-  for (const b of battles.filter(x => !x.resolved)) {
-    if (b.atk.troops >= b.def.troops) finalizeBattle(b, b.atk, b.def, log, states);
-    else finalizeBattle(b, b.def, b.atk, log, states);
-  }
+  // 残った戦闘を打ち切り
+  battles.forEach(b => { if (!b.resolved) forceResolveBattle(b, states, log); });
 
-  // 6. 軍隊状態をゲームデータへ反映
-  Object.values(states).forEach(st => {
-    const ad = gameState.armies[st.countryId];
-    if (!ad || !ad.units[st.armyIdx]) return;
-    const u = ad.units[st.armyIdx];
-    u.troops       = st.eliminated ? 0 : Math.max(0, st.troops);
-    u.location     = st.location;
-    u.ap           = 50;
-    u.mode         = st.eliminated ? 'idle' : st.mode;
-    u.specialUnits = st.specialUnits;
+  // 4. 軍隊状態をゲームデータへ反映（全滅した軍は枠ごと削除）
+  gameState.countries.forEach(country => {
+    const ad = gameState.armies[country.id];
+    if (!ad) return;
+    const myStates = Object.values(states).filter(s => s.countryId === country.id);
+    myStates.filter(s => s.eliminated).forEach(s => {
+      log.push({ type: 'battle', text: `${country.name}の${s.name}は全滅し、軍隊が解体された` });
+    });
+    ad.units = myStates.filter(s => !s.eliminated).map(s => ({
+      id: s.id, name: s.name,
+      troops: Math.max(0, Math.round(s.troops)),
+      location: s.location, ap: 50, mode: 'idle',
+      specialUnits: s.specialUnits || [],
+      atkStrategy: s.atkStrategy || '通常攻勢',
+      defStrategy: s.defStrategy || '通常防衛',
+      orders: []
+    }));
   });
 
-  // 7. 兵士収入（1ステート = 5名）
+  // 5. 兵士収入（1県 = 5名）
   gameState.countries.forEach(c => {
     const cnt = Object.values(gameState.territories).filter(t => t === c.id).length;
-    if (!gameState.armies[c.id]) gameState.armies[c.id] = { reserve: 0, units: initArmies(c.id) };
+    if (!gameState.armies[c.id]) gameState.armies[c.id] = { reserve: 0, units: [] };
     const income = cnt * 5;
     gameState.armies[c.id].reserve = (gameState.armies[c.id].reserve || 0) + income;
     log.push({ type: 'info', text: `${c.name}が${income}名の兵士を獲得（${cnt}県 × 5名 / 予備: ${gameState.armies[c.id].reserve}名）` });
   });
 
-  // 8. 処理済み命令を削除
+  // 6. 処理済み命令を削除
   gameState.pendingOrders = (gameState.pendingOrders || []).filter(o => o.turn > processedTurn);
 
-  // 9. ターン進行
+  // 7. ターン進行
   gameState.turn++;
   gameState.phase = 'action';
 
@@ -1118,7 +1262,7 @@ async function processTurn() {
   addLog({ type: 'info', text: `ターン${gameState.turn}が始まりました`, turn: gameState.turn });
 
   btn.classList.remove('processing'); btn.disabled = false;
-  status.textContent = `ターン${processedTurn}の処理が完了しました（ログ${log.length}件）`;
+  status.textContent = `ターン${processedTurn}の処理が完了しました（${round}ラウンド / ログ${log.length}件）`;
   updateAllUI();
   saveToGist();
 }
@@ -1313,51 +1457,53 @@ function renderEditPanel() {
 function renderEditArmyList(cid) {
   const el = document.getElementById('edit-army-list');
   const armies = gameState.armies && gameState.armies[cid];
+  const addBtn = `<button class="btn btn-sm btn-green btn-full" onclick="addArmyUnit('${cid}')">＋ 軍隊を創設</button>`;
   if (!armies || !armies.units) {
-    el.innerHTML = '<div style="color:#555;font-size:12px;">軍隊データなし（ゲーム開始後に生成されます）</div>';
+    el.innerHTML = '<div style="color:#555;font-size:12px;margin-bottom:6px;">軍隊データなし</div>' + addBtn;
     return;
   }
 
-  const prefOptions = '<option value="">未配置</option>' +
-    PREFS.map(p => `<option value="${p}">${NAMES[p]}</option>`).join('');
-
-  el.innerHTML = armies.units.map((u, i) => `
+  el.innerHTML = armies.units.map(u => {
+    const prefOptions = '<option value="">未配置</option>' +
+      (u.location && isBorder(u.location) ? `<option value="${u.location}" selected>${locName(u.location)}（県境）</option>` : '') +
+      PREFS.map(p => `<option value="${p}" ${u.location === p ? 'selected' : ''}>${NAMES[p]}</option>`).join('');
+    const atkOpts = ATK_STRATEGY_NAMES.map(s => `<option value="${s}" ${u.atkStrategy === s ? 'selected' : ''}>${s}</option>`).join('');
+    const defOpts = DEF_STRATEGY_NAMES.map(s => `<option value="${s}" ${u.defStrategy === s ? 'selected' : ''}>${s}</option>`).join('');
+    return `
     <div style="background:#0f3460;border-radius:6px;padding:8px 10px;">
-      <div style="font-size:11px;font-weight:bold;color:#a8dadc;margin-bottom:6px;">${u.name}</div>
+      <div style="display:flex;align-items:center;gap:6px;margin-bottom:6px;">
+        <span style="font-size:11px;font-weight:bold;color:#a8dadc;flex:1;">${u.name}</span>
+        <button class="btn btn-sm btn-red" onclick="deleteArmyUnit('${cid}','${u.id}')" title="削除">×</button>
+      </div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:5px;margin-bottom:6px;">
         <div>
           <label style="font-size:10px;color:#888;">部隊名</label>
-          <input type="text" class="field-input" id="edit-army-name-${i}" value="${u.name}" style="font-size:12px;padding:4px 6px;" />
+          <input type="text" class="field-input" id="edit-army-name-${u.id}" value="${u.name}" style="font-size:12px;padding:4px 6px;" />
         </div>
         <div>
           <label style="font-size:10px;color:#888;">兵力</label>
-          <input type="number" class="field-input" id="edit-army-troops-${i}" value="${u.troops || 0}" min="0" style="font-size:12px;padding:4px 6px;" />
+          <input type="number" class="field-input" id="edit-army-troops-${u.id}" value="${u.troops || 0}" min="0" style="font-size:12px;padding:4px 6px;" />
         </div>
         <div>
           <label style="font-size:10px;color:#888;">位置</label>
-          <select class="field-input" id="edit-army-loc-${i}" style="font-size:12px;padding:4px 6px;">
-            ${armies.units[i].location
-              ? prefOptions.replace(`value="${armies.units[i].location}"`, `value="${armies.units[i].location}" selected`)
-              : prefOptions}
-          </select>
+          <select class="field-input" id="edit-army-loc-${u.id}" style="font-size:12px;padding:4px 6px;">${prefOptions}</select>
         </div>
         <div>
           <label style="font-size:10px;color:#888;">行動力(AP)</label>
-          <input type="number" class="field-input" id="edit-army-ap-${i}" value="${u.ap !== undefined ? u.ap : 50}" min="0" max="50" style="font-size:12px;padding:4px 6px;" />
+          <input type="number" class="field-input" id="edit-army-ap-${u.id}" value="${u.ap !== undefined ? u.ap : 50}" min="0" max="50" style="font-size:12px;padding:4px 6px;" />
         </div>
-        <div style="grid-column:1/-1;">
-          <label style="font-size:10px;color:#888;">モード</label>
-          <select class="field-input" id="edit-army-mode-${i}" style="font-size:12px;padding:4px 6px;">
-            <option value="idle" ${!u.mode || u.mode === 'idle' ? 'selected' : ''}>待機</option>
-            <option value="defend" ${u.mode === 'defend' ? 'selected' : ''}>防衛</option>
-            <option value="move" ${u.mode === 'move' ? 'selected' : ''}>移動中</option>
-            <option value="attack" ${u.mode === 'attack' ? 'selected' : ''}>攻撃中</option>
-          </select>
+        <div>
+          <label style="font-size:10px;color:#888;">攻撃作戦</label>
+          <select class="field-input" id="edit-army-atk-${u.id}" style="font-size:12px;padding:4px 6px;">${atkOpts}</select>
+        </div>
+        <div>
+          <label style="font-size:10px;color:#888;">防御作戦</label>
+          <select class="field-input" id="edit-army-def-${u.id}" style="font-size:12px;padding:4px 6px;">${defOpts}</select>
         </div>
       </div>
-      <button class="btn btn-sm btn-blue btn-full" onclick="saveArmyUnit('${cid}', ${i})">保存</button>
-    </div>
-  `).join('');
+      <button class="btn btn-sm btn-blue btn-full" onclick="saveArmyUnit('${cid}','${u.id}')">保存</button>
+    </div>`;
+  }).join('') + '<div style="margin-top:4px;">' + addBtn + '</div>';
 }
 
 function saveCountryBasic() {
@@ -1385,19 +1531,45 @@ function saveReserve() {
   alert('予備兵力を更新しました');
 }
 
-function saveArmyUnit(cid, idx) {
-  if (!gameState.armies || !gameState.armies[cid] || !gameState.armies[cid].units[idx]) return;
-  const u = gameState.armies[cid].units[idx];
-  const newName = document.getElementById(`edit-army-name-${idx}`).value.trim();
+function saveArmyUnit(cid, unitId) {
+  const ad = gameState.armies && gameState.armies[cid];
+  if (!ad || !ad.units) return;
+  const u = ad.units.find(x => x.id === unitId);
+  if (!u) return;
+  const newName = document.getElementById(`edit-army-name-${unitId}`).value.trim();
   if (!newName) { alert('部隊名を入力してください'); return; }
   u.name = newName;
-  u.troops = Math.max(0, parseInt(document.getElementById(`edit-army-troops-${idx}`).value) || 0);
-  u.location = document.getElementById(`edit-army-loc-${idx}`).value || null;
-  u.ap = Math.min(50, Math.max(0, parseInt(document.getElementById(`edit-army-ap-${idx}`).value) || 0));
-  u.mode = document.getElementById(`edit-army-mode-${idx}`).value;
+  u.troops = Math.max(0, parseInt(document.getElementById(`edit-army-troops-${unitId}`).value) || 0);
+  u.location = document.getElementById(`edit-army-loc-${unitId}`).value || null;
+  u.ap = Math.min(50, Math.max(0, parseInt(document.getElementById(`edit-army-ap-${unitId}`).value) || 0));
+  u.atkStrategy = document.getElementById(`edit-army-atk-${unitId}`).value || '通常攻勢';
+  u.defStrategy = document.getElementById(`edit-army-def-${unitId}`).value || '通常防衛';
   renderEditArmyList(cid);
   updateColors();
   alert(`${u.name}を更新しました`);
+}
+
+function addArmyUnit(cid) {
+  if (!gameState.armies) gameState.armies = {};
+  if (!gameState.armies[cid]) gameState.armies[cid] = { reserve: 0, units: [] };
+  if (!gameState.armies[cid].units) gameState.armies[cid].units = [];
+  const units = gameState.armies[cid].units;
+  units.push({
+    id: uid(), name: `第${units.length + 1}軍`, troops: 0, location: null,
+    ap: 50, mode: 'idle', specialUnits: [], atkStrategy: '通常攻勢', defStrategy: '通常防衛', orders: []
+  });
+  renderEditArmyList(cid);
+}
+
+function deleteArmyUnit(cid, unitId) {
+  const ad = gameState.armies && gameState.armies[cid];
+  if (!ad || !ad.units) return;
+  const u = ad.units.find(x => x.id === unitId);
+  if (!confirm(`${u ? u.name : 'この軍隊'}を削除しますか？`)) return;
+  ad.units = ad.units.filter(x => x.id !== unitId);
+  gameState.pendingOrders = (gameState.pendingOrders || []).filter(o => o.armyId !== unitId);
+  renderEditArmyList(cid);
+  updateColors();
 }
 
 // ============================================================
@@ -1428,6 +1600,25 @@ function normalizeGameState(gs) {
   gs.gameLog      = gs.gameLog      || [];
   gs.spyResults   = gs.spyResults   || {};
   gs.spyAlerts    = gs.spyAlerts    || {};
+  // 軍隊データの欠損フィールドを補完
+  Object.values(gs.armies).forEach(ad => {
+    if (!ad) return;
+    if (!Array.isArray(ad.units)) ad.units = ad.units ? Object.values(ad.units) : [];
+    ad.units.forEach(u => {
+      if (!u.id) u.id = uid();
+      if (u.troops == null) u.troops = 0;
+      if (u.ap == null) u.ap = 50;
+      if (!u.mode) u.mode = 'idle';
+      if (!u.specialUnits) u.specialUnits = [];
+      if (!u.atkStrategy) u.atkStrategy = '通常攻勢';
+      if (!u.defStrategy) u.defStrategy = '通常防衛';
+    });
+  });
+  // pendingOrders: 旧 startTime → startRound に読み替え
+  gs.pendingOrders.forEach(o => {
+    if (o.startRound == null && o.startTime != null) o.startRound = o.startTime;
+    if (o.startRound == null) o.startRound = 0;
+  });
   return gs;
 }
 
