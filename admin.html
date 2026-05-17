@@ -760,7 +760,7 @@ function buildArmyStates() {
       states[unit.id] = {
         id: unit.id, countryId: country.id, name: unit.name || '軍',
         troops: unit.troops || 0, origTroops: unit.troops || 0,
-        location: unit.location, ap: 50,
+        location: unit.location == null ? null : unit.location, ap: 50,
         mode: unit.mode || 'idle',
         atkStrategy: unit.atkStrategy || '通常攻勢',
         defStrategy: unit.defStrategy || '通常防衛',
@@ -1234,7 +1234,7 @@ async function processTurn() {
     ad.units = myStates.filter(s => !s.eliminated).map(s => ({
       id: s.id, name: s.name,
       troops: Math.max(0, Math.round(s.troops)),
-      location: s.location, ap: 50, mode: 'idle',
+      location: s.location == null ? null : s.location, ap: 50, mode: 'idle',
       specialUnits: s.specialUnits || [],
       atkStrategy: s.atkStrategy || '通常攻勢',
       defStrategy: s.defStrategy || '通常防衛',
@@ -1612,6 +1612,7 @@ function normalizeGameState(gs) {
       if (!u.specialUnits) u.specialUnits = [];
       if (!u.atkStrategy) u.atkStrategy = '通常攻勢';
       if (!u.defStrategy) u.defStrategy = '通常防衛';
+      if (u.location === undefined) u.location = null;
     });
   });
   // pendingOrders: 旧 startTime → startRound に読み替え
