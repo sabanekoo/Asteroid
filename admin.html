@@ -64,7 +64,7 @@
     .btn.active { background: #e76f51; }
     .sea-item { display: flex; align-items: center; gap: 6px; padding: 3px 0; font-size: 11px; border-bottom: 1px solid #16213e; }
     .sea-item .del-btn { background: none; border: none; color: #e94560; cursor: pointer; font-size: 14px; line-height: 1; padding: 0; }
-    .pref-group.selected path, .pref-group.selected polygon { stroke: #e94560 !important; stroke-width: 2.5 !important; opacity: 0.8; }
+    .pref-group.selected path, .pref-group.selected polygon, path.pref-group.selected, polygon.pref-group.selected { stroke: #e94560 !important; stroke-width: 2.5 !important; opacity: 0.8; }
 
     /* ===== CONTENT ===== */
     #content { display: flex; flex: 1; overflow: hidden; }
@@ -184,8 +184,8 @@
     }
 
     .pref-group { cursor: pointer; }
-    .pref-group path, .pref-group polygon { stroke: #444; stroke-width: 0.5; transition: opacity 0.15s; }
-    .pref-group:hover path, .pref-group:hover polygon { opacity: 0.75; stroke: #fff; stroke-width: 1.2; }
+    .pref-group path, .pref-group polygon, path.pref-group, polygon.pref-group { stroke: #444; stroke-width: 0.5; transition: opacity 0.15s; }
+    .pref-group:hover path, .pref-group:hover polygon, path.pref-group:hover, polygon.pref-group:hover { opacity: 0.75; stroke: #fff; stroke-width: 1.2; }
 
     /* process animation */
     @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.5} }
@@ -485,18 +485,62 @@ const NAMES = {
   Kagoshima:"鹿児島県",Okinawa:"沖縄県"
 };
 let PREFS = Object.keys(NAMES);
+// prefId → 実際のDOM要素ID（旧形式: "Hokkaido_group" / 新形式: "Hokkaido"）
+let PREF_ELEM_ID = {};
+PREFS.forEach(id => { PREF_ELEM_ID[id] = id + '_group'; });
 
-// SVGから *_group 要素を走査して PREFS を再構築。
+function getPrefElem(prefId) {
+  return document.getElementById(PREF_ELEM_ID[prefId] || (prefId + '_group'));
+}
+
+function paintPref(g, fill) {
+  if (!g) return;
+  const tag = g.tagName.toLowerCase();
+  if (tag === 'path' || tag === 'polygon' || tag === 'rect' || tag === 'circle' || tag === 'ellipse') {
+    g.style.fill = fill;
+  } else {
+    g.querySelectorAll('path,polygon,rect,circle,ellipse').forEach(el => el.style.fill = fill);
+  }
+}
+
+// SVGから領域要素を走査して PREFS を再構築。
+// 1) <g id="X_group"> 形式（旧 admin 仕様）
+// 2) <path id="X"> など直接ID形式（MapChart 標準出力）
 // NAMES に登録がないIDは ID 自体を表示名として登録する。
 function discoverPrefsFromSVG() {
   const svg = document.querySelector('#map-container svg');
   if (!svg) return;
   const discovered = [];
+  PREF_ELEM_ID = {};
+
+  // 1) _group 形式
   svg.querySelectorAll('[id$="_group"]').forEach(g => {
     const id = g.id.replace(/_group$/, '');
+    if (discovered.indexOf(id) >= 0) return;
     discovered.push(id);
+    PREF_ELEM_ID[id] = g.id;
     if (!NAMES[id]) NAMES[id] = id;
   });
+
+  // 2) 直接ID形式（_group が無い、または足りない場合のフォールバック検出）
+  if (discovered.length === 0) {
+    const defs = svg.querySelector('defs');
+    svg.querySelectorAll('path[id], polygon[id]').forEach(el => {
+      if (defs && defs.contains(el)) return;
+      const geomOk = (el.tagName.toLowerCase() === 'path' && el.getAttribute('d'))
+                  || (el.tagName.toLowerCase() === 'polygon' && el.getAttribute('points'));
+      if (!geomOk) return;
+      const id = el.id;
+      if (!id) return;
+      // SVG構造IDは除外
+      if (/^(wrapper|map|map-group|svg-background|defs|markers)$/i.test(id)) return;
+      if (discovered.indexOf(id) >= 0) return;
+      discovered.push(id);
+      PREF_ELEM_ID[id] = id;
+      if (!NAMES[id]) NAMES[id] = id;
+    });
+  }
+
   if (discovered.length > 0) PREFS = discovered;
 }
 
@@ -771,12 +815,11 @@ function onPrefClick(prefId) {
 function updateColors() {
   if (!svgReady) return;
   PREFS.forEach(id => {
-    const g = document.getElementById(id + '_group');
+    const g = getPrefElem(id);
     if (!g) return;
     const cid = gameState.territories[id];
     const c = cid ? gameState.countries.find(x => x.id === cid) : null;
-    const fill = c ? c.color : '#c8c8c8';
-    g.querySelectorAll('path,polygon,rect,circle').forEach(el => el.style.fill = fill);
+    paintPref(g, c ? c.color : '#c8c8c8');
   });
 }
 
@@ -1431,10 +1474,10 @@ function updateTopbar() {
 // ============================================================
 function attachPrefHandlers() {
   PREFS.forEach(id => {
-    const g = document.getElementById(id + '_group');
+    const g = getPrefElem(id);
     if (!g) return;
     g.classList.add('pref-group');
-    g.querySelectorAll('path,polygon,rect,circle').forEach(el => el.style.fill = '#c8c8c8');
+    paintPref(g, '#c8c8c8');
     g.addEventListener('click', () => onPrefClick(id));
     g.addEventListener('mouseenter', () => showTip(id));
     g.addEventListener('mouseleave', hideTip);
@@ -1542,7 +1585,7 @@ function computePrefCenters() {
   const svg = document.querySelector('#map-container svg');
   if (!svg) return;
   PREFS.forEach(id => {
-    const g = document.getElementById(id + '_group');
+    const g = getPrefElem(id);
     if (!g) return;
     try {
       const bbox = g.getBBox();
@@ -1586,18 +1629,24 @@ async function detectAdjacency() {
     bg.setAttribute('fill', '#000000');
     clone.insertBefore(bg, clone.firstChild);
 
-    const existingPrefs = PREFS.filter(id => clone.querySelector('#' + id + '_group'));
+    const existingPrefs = PREFS.filter(id => clone.querySelector('#' + (PREF_ELEM_ID[id] || (id + '_group'))));
     existingPrefs.forEach((id, i) => {
-      const g = clone.querySelector('#' + id + '_group');
+      const g = clone.querySelector('#' + (PREF_ELEM_ID[id] || (id + '_group')));
       if (!g) return;
       const code = i + 1;
       const r = code & 0xFF, gv = code >> 8;
-      g.querySelectorAll('path, polygon, rect, circle, ellipse, polyline').forEach(el => {
+      const paintAttrs = (el) => {
         el.setAttribute('fill', `rgb(${r},${gv},0)`);
         el.setAttribute('stroke', 'none');
         el.setAttribute('stroke-width', '0');
         el.removeAttribute('filter');
-      });
+      };
+      const tag = g.tagName.toLowerCase();
+      if (tag === 'path' || tag === 'polygon' || tag === 'rect' || tag === 'circle' || tag === 'ellipse' || tag === 'polyline') {
+        paintAttrs(g);
+      } else {
+        g.querySelectorAll('path, polygon, rect, circle, ellipse, polyline').forEach(paintAttrs);
+      }
     });
 
     const vb = svg.viewBox.baseVal;
@@ -1730,14 +1779,14 @@ function renderSeaList() {
 
 function highlightSeaSelected() {
   PREFS.forEach(id => {
-    const g = document.getElementById(id + '_group');
+    const g = getPrefElem(id);
     if (g) g.classList.toggle('selected', id === selectedSeaPref);
   });
 }
 
 function clearSeaHighlight() {
   PREFS.forEach(id => {
-    const g = document.getElementById(id + '_group');
+    const g = getPrefElem(id);
     if (g) g.classList.remove('selected');
   });
 }

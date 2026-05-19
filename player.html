@@ -135,11 +135,11 @@
 
     /* MAP INTERACTION */
     .pref-group { cursor: pointer; }
-    .pref-group path, .pref-group polygon { stroke: #444; stroke-width: 0.5; transition: all 0.1s; }
-    .pref-group:hover path, .pref-group:hover polygon { stroke: #fff; stroke-width: 1.2; opacity: 0.8; }
-    .pref-group.in-path path, .pref-group.in-path polygon { stroke: #57cc99; stroke-width: 2; }
-    .pref-group.army-here path, .pref-group.army-here polygon { stroke: #a8dadc; stroke-width: 1.5; }
-    .pref-group.enemy-here path, .pref-group.enemy-here polygon { stroke: var(--accent); stroke-width: 1.5; }
+    .pref-group path, .pref-group polygon, path.pref-group, polygon.pref-group { stroke: #444; stroke-width: 0.5; transition: all 0.1s; }
+    .pref-group:hover path, .pref-group:hover polygon, path.pref-group:hover, polygon.pref-group:hover { stroke: #fff; stroke-width: 1.2; opacity: 0.8; }
+    .pref-group.in-path path, .pref-group.in-path polygon, path.pref-group.in-path, polygon.pref-group.in-path { stroke: #57cc99; stroke-width: 2; }
+    .pref-group.army-here path, .pref-group.army-here polygon, path.pref-group.army-here, polygon.pref-group.army-here { stroke: #a8dadc; stroke-width: 1.5; }
+    .pref-group.enemy-here path, .pref-group.enemy-here polygon, path.pref-group.enemy-here, polygon.pref-group.enemy-here { stroke: var(--accent); stroke-width: 1.5; }
     #hq-tooltip { position: fixed; background: rgba(0,0,0,0.9); color: #fff; padding: 6px 12px; border-radius: 4px; font-size: 12px; pointer-events: none; display: none; z-index: 999; border: 1px solid #0f3460; max-width: 200px; }
 
     /* SETTINGS */
@@ -523,21 +523,61 @@ const NAMES = {
   Kagoshima:"鹿児島県",Okinawa:"沖縄県"
 };
 let PREFS = Object.keys(NAMES);
+let PREF_ELEM_ID = {};
+PREFS.forEach(id => { PREF_ELEM_ID[id] = 'hq_' + id + '_group'; });
 
-// SVGから *_group 要素を走査して PREFS を再構築。
-// NAMES に登録がないIDは ID 自体を表示名として登録する。
+function getHQPrefElem(prefId) {
+  return document.getElementById(PREF_ELEM_ID[prefId] || ('hq_' + prefId + '_group'));
+}
+
+function paintHQPref(g, fill) {
+  if (!g) return;
+  const tag = g.tagName.toLowerCase();
+  if (tag === 'path' || tag === 'polygon' || tag === 'rect' || tag === 'circle' || tag === 'ellipse') {
+    g.style.fill = fill;
+  } else {
+    g.querySelectorAll('path,polygon,rect,circle,ellipse').forEach(el => el.style.fill = fill);
+  }
+}
+
+// SVGから領域要素を走査して PREFS を再構築。
+// 1) <g id="hq_X_group"> 形式（旧 admin 仕様）
+// 2) <path id="hq_X"> など直接ID形式（MapChart 標準出力）
 function discoverPrefsFromHQSVG() {
   const svg = document.querySelector('#hq-map-container svg');
   if (!svg) return;
   const discovered = [];
+  PREF_ELEM_ID = {};
+
+  // 1) _group 形式
   svg.querySelectorAll('[id]').forEach(el => {
     const m = /^hq_(.+)_group$/.exec(el.id);
-    if (m) {
-      const id = m[1];
-      discovered.push(id);
-      if (!NAMES[id]) NAMES[id] = id;
-    }
+    if (!m) return;
+    const id = m[1];
+    if (discovered.indexOf(id) >= 0) return;
+    discovered.push(id);
+    PREF_ELEM_ID[id] = el.id;
+    if (!NAMES[id]) NAMES[id] = id;
   });
+
+  // 2) 直接ID形式
+  if (discovered.length === 0) {
+    const defs = svg.querySelector('defs');
+    svg.querySelectorAll('path[id], polygon[id]').forEach(el => {
+      if (defs && defs.contains(el)) return;
+      const tag = el.tagName.toLowerCase();
+      const geomOk = (tag === 'path' && el.getAttribute('d')) || (tag === 'polygon' && el.getAttribute('points'));
+      if (!geomOk) return;
+      if (!el.id.startsWith('hq_')) return;
+      const id = el.id.replace(/^hq_/, '');
+      if (/^(wrapper|map|map-group|svg-background|defs|markers|army-markers)$/i.test(id)) return;
+      if (discovered.indexOf(id) >= 0) return;
+      discovered.push(id);
+      PREF_ELEM_ID[id] = el.id;
+      if (!NAMES[id]) NAMES[id] = id;
+    });
+  }
+
   if (discovered.length > 0) PREFS = discovered;
 }
 
@@ -1368,7 +1408,7 @@ function renderHQMap() {
   const myOrders = (gameState.pendingOrders || []).filter(o => o.countryId === myCountryId);
 
   PREFS.forEach(id => {
-    const g = document.getElementById('hq_' + id + '_group');
+    const g = getHQPrefElem(id);
     if (!g) return;
     const cid = gameState.territories && gameState.territories[id];
     const country = cid ? gameState.countries.find(x => x.id === cid) : null;
@@ -1376,7 +1416,7 @@ function renderHQMap() {
     // 諜報選択モード: 自国の県はグレーアウト
     if (hqSpyMode && cid === myCountryId) fill = '#555';
     if (id === spyTargetPref) fill = '#f4a261';
-    g.querySelectorAll('path,polygon,rect,circle').forEach(el => el.style.fill = fill);
+    paintHQPref(g, fill);
     g.classList.remove('in-path', 'army-here', 'enemy-here');
 
     if (hqPath.includes(id)) g.classList.add('in-path');
@@ -1429,7 +1469,7 @@ function updateArmyMarkers() {
   });
 
   Object.entries(byLocation).forEach(([prefId, entries]) => {
-    const g = document.getElementById('hq_' + prefId + '_group');
+    const g = getHQPrefElem(prefId);
     if (!g) return;
 
     const gRect = g.getBoundingClientRect();
@@ -1519,7 +1559,7 @@ async function initHQMap() {
     discoverPrefsFromHQSVG();
 
     PREFS.forEach(id => {
-      const g = document.getElementById('hq_' + id + '_group');
+      const g = getHQPrefElem(id);
       if (!g) return;
       g.classList.add('pref-group');
       g.addEventListener('click', () => onHQMapClick(id));
