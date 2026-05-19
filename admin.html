@@ -1622,11 +1622,26 @@ async function detectAdjacency() {
     clone.removeAttribute('class');
     clone.querySelectorAll('[style]').forEach(el => el.removeAttribute('style'));
     clone.querySelectorAll('[class]').forEach(el => el.removeAttribute('class'));
+    // 全要素に crispEdges を強制してアンチエイリアシングを無効化（誤隣接の主因）
+    clone.setAttribute('shape-rendering', 'crispEdges');
+    clone.querySelectorAll('path, polygon, rect, circle, ellipse, polyline').forEach(el => {
+      el.setAttribute('shape-rendering', 'crispEdges');
+    });
+    // 既存の背景rect（svg-background等）を除去
+    clone.querySelectorAll('rect').forEach(r => {
+      const id = r.id || '';
+      const w = parseFloat(r.getAttribute('width') || '0');
+      const h = parseFloat(r.getAttribute('height') || '0');
+      if (/^(svg-background|background|bg|wrapper-bg)$/i.test(id) || (w >= 100 && h >= 100 && (r.getAttribute('fill') || '').toLowerCase() !== '#000000')) {
+        if (PREFS.indexOf(id) < 0) r.remove();
+      }
+    });
 
     const bg = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
     bg.setAttribute('x', '-99999'); bg.setAttribute('y', '-99999');
     bg.setAttribute('width', '199999'); bg.setAttribute('height', '199999');
     bg.setAttribute('fill', '#000000');
+    bg.setAttribute('shape-rendering', 'crispEdges');
     clone.insertBefore(bg, clone.firstChild);
 
     const existingPrefs = PREFS.filter(id => clone.querySelector('#' + (PREF_ELEM_ID[id] || (id + '_group'))));
@@ -1650,7 +1665,10 @@ async function detectAdjacency() {
     });
 
     const vb = svg.viewBox.baseVal;
-    const W = 900, H = 700;
+    const aspect = (vb && vb.width > 0 && vb.height > 0) ? (vb.width / vb.height) : (4/3);
+    const MAX_DIM = 2400;
+    const W = aspect >= 1 ? MAX_DIM : Math.round(MAX_DIM * aspect);
+    const H = aspect >= 1 ? Math.round(MAX_DIM / aspect) : MAX_DIM;
     clone.setAttribute('width', W);
     clone.setAttribute('height', H);
     if (vb && vb.width > 0) {
@@ -1685,27 +1703,41 @@ async function detectAdjacency() {
       const base = (py * W + px) * 4;
       return data[base + 1] * 256 + data[base];
     }
+    // 1ペアあたりの接触ピクセル数をカウント。閾値未満は単発ノイズとして無視
+    const contactCount = new Map();
+    const NEIGHBORS = [[1,0],[-1,0],[0,1],[0,-1]];
     for (let y = 0; y < H; y++) {
       for (let x = 0; x < W; x++) {
         const cA = getCode(x, y);
         if (cA === 0) continue;
         const iA = cA - 1;
         if (iA < 0 || iA >= existingPrefs.length) continue;
-        for (const [dx, dy] of [[2,0],[-2,0],[0,2],[0,-2],[1,0],[-1,0],[0,1],[0,-1]]) {
+        for (const [dx, dy] of NEIGHBORS) {
           const nx = x + dx, ny = y + dy;
           if (nx < 0 || nx >= W || ny < 0 || ny >= H) continue;
           const cB = getCode(nx, ny);
           if (cB === 0 || cB === cA) continue;
           const iB = cB - 1;
           if (iB < 0 || iB >= existingPrefs.length || iB === iA) continue;
-          landAdj[existingPrefs[iA]].add(existingPrefs[iB]);
-          landAdj[existingPrefs[iB]].add(existingPrefs[iA]);
+          const lo = iA < iB ? iA : iB;
+          const hi = iA < iB ? iB : iA;
+          const k = lo * 65536 + hi;
+          contactCount.set(k, (contactCount.get(k) || 0) + 1);
         }
       }
     }
+    // 接触閾値: 解像度に応じて緩和（小さな島同士は接触ピクセルが少ない）
+    const CONTACT_THRESHOLD = Math.max(2, Math.round((W + H) / 1200));
+    contactCount.forEach((count, k) => {
+      if (count < CONTACT_THRESHOLD) return;
+      const lo = Math.floor(k / 65536);
+      const hi = k % 65536;
+      landAdj[existingPrefs[lo]].add(existingPrefs[hi]);
+      landAdj[existingPrefs[hi]].add(existingPrefs[lo]);
+    });
 
     const total = PREFS.reduce((s, id) => s + (landAdj[id] ? landAdj[id].size : 0), 0) / 2;
-    setAdjStatus('detect-adj-status', `検出完了 - ${Math.round(total)}組の陸上隣接`, 'ok');
+    setAdjStatus('detect-adj-status', `検出完了 - ${Math.round(total)}組（${W}×${H}px, 閾値${CONTACT_THRESHOLD}px）`, 'ok');
     updateAdjOverlay();
     updateAdjSummary();
   } catch (e) {
