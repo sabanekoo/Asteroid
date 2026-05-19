@@ -502,6 +502,7 @@ const FIREBASE_CONFIG = {
 firebase.initializeApp(FIREBASE_CONFIG);
 const GAME_REF = firebase.database().ref('gamestate');
 const ADJ_REF  = firebase.database().ref('adjacency');
+const SVG_REF  = firebase.database().ref('mapSvg');
 
 // ============================================================
 //  定数・隣接データ
@@ -521,7 +522,24 @@ const NAMES = {
   Nagasaki:"長崎県",Kumamoto:"熊本県",Oita:"大分県",Miyazaki:"宮崎県",
   Kagoshima:"鹿児島県",Okinawa:"沖縄県"
 };
-const PREFS = Object.keys(NAMES);
+let PREFS = Object.keys(NAMES);
+
+// SVGから *_group 要素を走査して PREFS を再構築。
+// NAMES に登録がないIDは ID 自体を表示名として登録する。
+function discoverPrefsFromHQSVG() {
+  const svg = document.querySelector('#hq-map-container svg');
+  if (!svg) return;
+  const discovered = [];
+  svg.querySelectorAll('[id]').forEach(el => {
+    const m = /^hq_(.+)_group$/.exec(el.id);
+    if (m) {
+      const id = m[1];
+      discovered.push(id);
+      if (!NAMES[id]) NAMES[id] = id;
+    }
+  });
+  if (discovered.length > 0) PREFS = discovered;
+}
 
 // Firebaseから読み込む。未取得時は日本地図のデフォルト値を使用
 let ADJACENCY = {
@@ -1061,7 +1079,7 @@ function onOrderTypeChange() {
     const a = getSelArmy();
     if (a && a.location && !isBorder(a.location)) {
       hqDefendTarget = a.location;
-      document.getElementById('hq-defend-target').textContent = NAMES[a.location] + '（現在地）';
+      document.getElementById('hq-defend-target').textContent = (NAMES[a.location] || a.location) + '（現在地）';
     } else {
       document.getElementById('hq-defend-target').textContent = '未配置 — 先に配置場所を設定してください';
     }
@@ -1103,7 +1121,7 @@ function onHQMapClick(prefId) {
   } else {
     if (prefId === lastPref) return;
     if (!(ADJACENCY[lastPref] || []).includes(prefId)) {
-      alert(`${NAMES[lastPref]}と${NAMES[prefId]}は隣接していません`);
+      alert(`${NAMES[lastPref] || lastPref}と${NAMES[prefId] || prefId}は隣接していません`);
       return;
     }
     hqPath.push(prefId);
@@ -1461,9 +1479,18 @@ function updateArmyMarkers() {
 
 async function initHQMap() {
   try {
-    const txt = (typeof MAP_SVG_CONTENT !== 'undefined')
-      ? (typeof MAP_SVG_CONTENT === 'object' ? MAP_SVG_CONTENT.value : MAP_SVG_CONTENT)
-      : await fetch('MapChart_Map.svg').then(r => r.text());
+    let txt = null;
+    try {
+      const svgSnap = await SVG_REF.get();
+      if (svgSnap.exists() && typeof svgSnap.val() === 'string' && svgSnap.val().trim().startsWith('<')) {
+        txt = svgSnap.val();
+      }
+    } catch (e) { /* Firebase未到達でもローカルにフォールバック */ }
+    if (!txt) {
+      txt = (typeof MAP_SVG_CONTENT !== 'undefined')
+        ? (typeof MAP_SVG_CONTENT === 'object' ? MAP_SVG_CONTENT.value : MAP_SVG_CONTENT)
+        : await fetch('MapChart_Map.svg').then(r => r.text());
+    }
 
     const container = document.getElementById('hq-map-container');
     container.innerHTML = txt;
@@ -1488,6 +1515,8 @@ async function initHQMap() {
       });
     }
     hqMapReady = true;
+
+    discoverPrefsFromHQSVG();
 
     PREFS.forEach(id => {
       const g = document.getElementById('hq_' + id + '_group');
@@ -1514,7 +1543,7 @@ function showHQTip(prefId) {
   const country = cid ? gameState.countries.find(x => x.id === cid) : null;
   const ownLabel = cid === myCountryId ? '（自国）' : '';
   hqTooltip.style.display = 'block';
-  hqTooltip.textContent = NAMES[prefId] + (country ? ` — ${country.name}${ownLabel}` : ' — 未割当');
+  hqTooltip.textContent = (NAMES[prefId] || prefId) + (country ? ` — ${country.name}${ownLabel}` : ' — 未割当');
 }
 function hideHQTip() { hqTooltip.style.display = 'none'; }
 

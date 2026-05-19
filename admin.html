@@ -58,8 +58,13 @@
     .btn-dark { background: #1d3557; }
     .btn-red { background: #6b2737; }
     .btn-green { background: #2d6a4f; }
+    .btn-orange { background: #e76f51; }
     .btn-full { width: 100%; }
     .btn-sm { padding: 4px 10px; font-size: 12px; }
+    .btn.active { background: #e76f51; }
+    .sea-item { display: flex; align-items: center; gap: 6px; padding: 3px 0; font-size: 11px; border-bottom: 1px solid #16213e; }
+    .sea-item .del-btn { background: none; border: none; color: #e94560; cursor: pointer; font-size: 14px; line-height: 1; padding: 0; }
+    .pref-group.selected path, .pref-group.selected polygon { stroke: #e94560 !important; stroke-width: 2.5 !important; opacity: 0.8; }
 
     /* ===== CONTENT ===== */
     #content { display: flex; flex: 1; overflow: hidden; }
@@ -169,6 +174,8 @@
     #map-area:active { cursor: grabbing; }
     #map-container { position: absolute; top: 0; left: 0; width: 100%; height: 100%; transform-origin: 0 0; display: flex; align-items: center; justify-content: center; }
     #map-container svg { width: 100%; height: 100%; max-height: 100%; }
+    #overlay-svg { position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; transform-origin: 0 0; display: none; }
+    #overlay-svg.visible { display: block; }
 
     #tooltip {
       position: fixed; background: rgba(0,0,0,0.9); color: #fff;
@@ -246,6 +253,7 @@
         <div class="stab" onclick="showTab('countries')" id="tab-countries">国一覧</div>
         <div class="stab" onclick="showTab('edit')" id="tab-edit">データ編集</div>
         <div class="stab" onclick="showTab('sync')" id="tab-sync">同期</div>
+        <div class="stab" onclick="showTab('map')" id="tab-map">マップ</div>
         <div class="stab" onclick="showTab('log')" id="tab-log">ログ</div>
         <div class="stab" onclick="showTab('process')" id="tab-process">処理</div>
       </div>
@@ -340,13 +348,41 @@
           <div id="sync-status" style="font-size:11px;color:#aaa;margin-top:4px;min-height:14px;"></div>
         </div>
         <div class="section">
-          <h2>地図を差し替え</h2>
-          <p style="font-size:11px;color:#888;line-height:1.6;">SVGファイルをアップロードすると地図を更新します</p>
-          <input type="file" id="svg-upload" accept=".svg" style="font-size:12px;color:#aaa;" onchange="handleSVGUpload(event)" />
-        </div>
-        <div class="section">
           <h2>データ管理</h2>
           <button class="btn btn-red btn-full btn-sm" onclick="resetAll()">全てリセット</button>
+        </div>
+      </div>
+
+      <!-- マップ タブ -->
+      <div class="tab-panel" id="panel-map">
+        <div class="section">
+          <h2><span style="color:#e94560">1</span> SVGを差し替え</h2>
+          <p style="font-size:11px;color:#888;line-height:1.6;">新しい地図SVGをアップロードします（既存の地図のままでも編集可能）</p>
+          <input type="file" id="svg-upload" accept=".svg" style="font-size:12px;color:#aaa;width:100%;" onchange="handleSVGUpload(event)" />
+        </div>
+        <div class="section">
+          <h2><span style="color:#e94560">2</span> 隣接を自動検出</h2>
+          <p style="font-size:11px;color:#888;line-height:1.6;">県境の接触をピクセル解析して陸上隣接を自動構築します</p>
+          <button class="btn btn-blue btn-full btn-sm" id="detect-adj-btn" onclick="detectAdjacency()">自動検出する</button>
+          <div id="detect-adj-status" style="font-size:11px;color:#aaa;min-height:14px;"></div>
+        </div>
+        <div class="section">
+          <h2><span style="color:#e94560">3</span> 海峡を手動設定</h2>
+          <p style="font-size:11px;color:#888;line-height:1.6;">2つの県を順番にクリックして海峡（海越えの隣接）を追加/削除します</p>
+          <button class="btn btn-full btn-sm" id="sea-mode-btn" onclick="toggleSeaMode()">海峡追加モード</button>
+          <div id="sea-mode-status" style="font-size:11px;color:#aaa;min-height:14px;"></div>
+          <div id="sea-list" style="max-height:140px;overflow-y:auto;font-size:11px;"></div>
+        </div>
+        <div class="section">
+          <h2><span style="color:#e94560">4</span> Firebaseに保存</h2>
+          <p style="font-size:11px;color:#888;line-height:1.6;">SVG本体と隣接データをサーバに反映します（全プレイヤーに即適用）</p>
+          <button class="btn btn-orange btn-full btn-sm" id="save-map-btn" onclick="saveMapToFirebase()">SVG＋隣接データを保存</button>
+          <button class="btn btn-dark btn-full btn-sm" id="save-adj-btn" onclick="saveAdjacencyToFirebase()" style="margin-top:4px;">隣接のみ保存</button>
+          <div id="save-adj-status" style="font-size:11px;color:#aaa;min-height:14px;"></div>
+        </div>
+        <div class="section">
+          <h2>サマリ</h2>
+          <div id="adj-summary" style="font-size:11px;color:#aaa;line-height:1.6;">未検出</div>
         </div>
       </div>
 
@@ -396,6 +432,7 @@
     <!-- ===== MAP ===== -->
     <div id="map-area">
       <div id="map-container"><div style="color:#aaa">SVG地図を読み込み中...</div></div>
+      <svg id="overlay-svg" xmlns="http://www.w3.org/2000/svg"></svg>
       <div class="map-zoom-controls">
         <button class="zoom-btn" onclick="adminZoomIn()" title="拡大">＋</button>
         <button class="zoom-btn" onclick="adminZoomReset()" title="リセット">⟳</button>
@@ -426,6 +463,7 @@ const FIREBASE_CONFIG = {
 firebase.initializeApp(FIREBASE_CONFIG);
 const GAME_REF = firebase.database().ref('gamestate');
 const ADJ_REF  = firebase.database().ref('adjacency');
+const SVG_REF  = firebase.database().ref('mapSvg');
 
 // ============================================================
 //  定数
@@ -446,7 +484,44 @@ const NAMES = {
   Nagasaki:"長崎県",Kumamoto:"熊本県",Oita:"大分県",Miyazaki:"宮崎県",
   Kagoshima:"鹿児島県",Okinawa:"沖縄県"
 };
-const PREFS = Object.keys(NAMES);
+let PREFS = Object.keys(NAMES);
+
+// SVGから *_group 要素を走査して PREFS を再構築。
+// NAMES に登録がないIDは ID 自体を表示名として登録する。
+function discoverPrefsFromSVG() {
+  const svg = document.querySelector('#map-container svg');
+  if (!svg) return;
+  const discovered = [];
+  svg.querySelectorAll('[id$="_group"]').forEach(g => {
+    const id = g.id.replace(/_group$/, '');
+    discovered.push(id);
+    if (!NAMES[id]) NAMES[id] = id;
+  });
+  if (discovered.length > 0) PREFS = discovered;
+}
+
+// 現在の PREFS に含まれないIDをゲームステートから除去
+function pruneStaleGameState() {
+  const valid = new Set(PREFS);
+  let removed = 0;
+  Object.keys(gameState.territories).forEach(id => {
+    if (!valid.has(id)) { delete gameState.territories[id]; removed++; }
+  });
+  Object.values(gameState.armies || {}).forEach(ad => {
+    if (!ad || !ad.units) return;
+    ad.units.forEach(u => {
+      if (u.location && !valid.has(u.location)) {
+        if (typeof u.location === 'string' && u.location.indexOf('|') >= 0) {
+          const [a, b] = u.location.split('|');
+          if (!valid.has(a) || !valid.has(b)) u.location = null;
+        } else {
+          u.location = null;
+        }
+      }
+    });
+  });
+  return removed;
+}
 
 // Firebaseから読み込む。未取得時は日本地図のデフォルト値を使用
 let ADJACENCY = {
@@ -585,6 +660,20 @@ function showTab(name) {
   if (name === 'process') updateProcessPanel();
   if (name === 'territory') renderMiniList();
   if (name === 'edit') { populateEditSelect(); renderEditPanel(); }
+  const overlay = document.getElementById('overlay-svg');
+  if (overlay) overlay.classList.toggle('visible', name === 'map');
+  if (name === 'map') {
+    if (!Object.keys(prefCenters).length) computePrefCenters();
+    if (!landAdj || !Object.keys(landAdj).length) seedLandAdjFromAdjacency();
+    updateAdjOverlay();
+    renderSeaList();
+    updateAdjSummary();
+  } else if (seaMode) {
+    seaMode = false; selectedSeaPref = null;
+    clearSeaHighlight();
+    const b = document.getElementById('sea-mode-btn');
+    if (b) { b.textContent = '海峡追加モード'; b.classList.remove('active'); }
+  }
 }
 
 // ============================================================
@@ -663,6 +752,10 @@ function renderMiniList() {
 // ============================================================
 function onPrefClick(prefId) {
   if (adminMapWasDragging) { adminMapWasDragging = false; return; }
+  if (currentTab === 'map') {
+    if (seaMode) onSeaPrefClick(prefId);
+    return;
+  }
   if (!selectedCountryId) { alert('先に国を選択してください'); return; }
   if (gameState.territories[prefId] === selectedCountryId) {
     delete gameState.territories[prefId];
@@ -1336,26 +1429,46 @@ function updateTopbar() {
 // ============================================================
 //  SVG読み込み
 // ============================================================
+function attachPrefHandlers() {
+  PREFS.forEach(id => {
+    const g = document.getElementById(id + '_group');
+    if (!g) return;
+    g.classList.add('pref-group');
+    g.querySelectorAll('path,polygon,rect,circle').forEach(el => el.style.fill = '#c8c8c8');
+    g.addEventListener('click', () => onPrefClick(id));
+    g.addEventListener('mouseenter', () => showTip(id));
+    g.addEventListener('mouseleave', hideTip);
+  });
+}
+
 async function loadSVG() {
   try {
-    const txt = (typeof MAP_SVG_CONTENT !== 'undefined')
-      ? (typeof MAP_SVG_CONTENT === 'object' ? MAP_SVG_CONTENT.value : MAP_SVG_CONTENT)
-      : await fetch('MapChart_Map.svg').then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.text(); });
+    let txt = null;
+    try {
+      const svgSnap = await SVG_REF.get();
+      if (svgSnap.exists() && typeof svgSnap.val() === 'string' && svgSnap.val().trim().startsWith('<')) {
+        txt = svgSnap.val();
+      }
+    } catch (e) { /* Firebase未到達でもローカルにフォールバック */ }
+    if (!txt) {
+      txt = (typeof MAP_SVG_CONTENT !== 'undefined')
+        ? (typeof MAP_SVG_CONTENT === 'object' ? MAP_SVG_CONTENT.value : MAP_SVG_CONTENT)
+        : await fetch('MapChart_Map.svg').then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.text(); });
+    }
     const container = document.getElementById('map-container');
     container.innerHTML = txt;
     const svg = container.querySelector('svg');
-    if (svg) { svg.style.width = '100%'; svg.style.height = '100%'; svg.style.backgroundColor = '#1a1a2e'; svg.removeAttribute('width'); svg.removeAttribute('height'); }
+    if (svg) {
+      svg.style.width = '100%'; svg.style.height = '100%';
+      svg.style.backgroundColor = '#1a1a2e';
+      svg.removeAttribute('width'); svg.removeAttribute('height');
+      svg.setAttribute('preserveAspectRatio', 'xMidYMid meet');
+    }
     svgReady = true;
-    PREFS.forEach(id => {
-      const g = document.getElementById(id + '_group');
-      if (!g) return;
-      g.classList.add('pref-group');
-      g.querySelectorAll('path,polygon,rect,circle').forEach(el => el.style.fill = '#c8c8c8');
-      g.addEventListener('click', () => onPrefClick(id));
-      g.addEventListener('mouseenter', () => showTip(id));
-      g.addEventListener('mouseleave', hideTip);
-    });
+    discoverPrefsFromSVG();
+    attachPrefHandlers();
     updateColors();
+    setTimeout(() => { computePrefCenters(); seedLandAdjFromAdjacency(); }, 100);
   } catch (e) {
     document.getElementById('map-container').innerHTML =
       `<div style="color:#e94560;padding:20px">SVG読み込み失敗: ${e.message}</div>`;
@@ -1371,21 +1484,378 @@ function handleSVGUpload(event) {
     const container = document.getElementById('map-container');
     container.innerHTML = e.target.result;
     const svg = container.querySelector('svg');
-    if (svg) { svg.style.width='100%'; svg.style.height='100%'; svg.removeAttribute('width'); svg.removeAttribute('height'); }
+    if (svg) {
+      svg.style.width='100%'; svg.style.height='100%';
+      svg.removeAttribute('width'); svg.removeAttribute('height');
+      svg.setAttribute('preserveAspectRatio', 'xMidYMid meet');
+    }
     svgReady = true;
-    PREFS.forEach(id => {
-      const g = document.getElementById(id + '_group');
-      if (!g) return;
-      g.classList.add('pref-group');
-      g.querySelectorAll('path,polygon,rect,circle').forEach(el => el.style.fill = '#c8c8c8');
-      g.addEventListener('click', () => onPrefClick(id));
-      g.addEventListener('mouseenter', () => showTip(id));
-      g.addEventListener('mouseleave', hideTip);
-    });
+    const prevPrefs = PREFS.slice();
+    discoverPrefsFromSVG();
+    const changed = PREFS.length !== prevPrefs.length || PREFS.some(p => !prevPrefs.includes(p));
+    if (changed) {
+      const removed = pruneStaleGameState();
+      ADJACENCY = {};
+      PREFS.forEach(id => { ADJACENCY[id] = []; });
+      if (removed > 0) {
+        alert(`地図が変わりました（${PREFS.length}エリアを認識）。\n旧地図に紐づいた領土/軍隊位置 ${removed} 件をクリアしました。\n「自動検出 → 海峡設定 → Firebase保存」で隣接データを更新してください。`);
+      } else {
+        alert(`地図を更新しました（${PREFS.length}エリアを認識）。\n「自動検出 → 海峡設定 → Firebase保存」で隣接データを更新してください。`);
+      }
+    } else {
+      alert('地図を更新しました');
+    }
+    attachPrefHandlers();
     updateColors();
-    alert('地図を更新しました');
+    landAdj = {}; seaCrossings = new Set(); selectedSeaPref = null;
+    PREFS.forEach(id => { landAdj[id] = new Set(); });
+    setTimeout(() => {
+      computePrefCenters();
+      updateAdjOverlay();
+      renderSeaList();
+      updateAdjSummary();
+      updateAllUI();
+      setAdjStatus('detect-adj-status', 'SVG読み込み完了。「自動検出する」を押してください', 'ok');
+    }, 150);
   };
   reader.readAsText(file);
+}
+
+// ============================================================
+//  地図編集（隣接・海峡）
+// ============================================================
+let landAdj = {};
+let seaCrossings = new Set();
+let seaMode = false;
+let selectedSeaPref = null;
+let prefCenters = {};
+
+function setAdjStatus(id, msg, type) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.textContent = msg;
+  el.style.color = type === 'ok' ? '#57cc99' : type === 'err' ? '#e94560' : '#aaa';
+}
+
+function computePrefCenters() {
+  prefCenters = {};
+  const svg = document.querySelector('#map-container svg');
+  if (!svg) return;
+  PREFS.forEach(id => {
+    const g = document.getElementById(id + '_group');
+    if (!g) return;
+    try {
+      const bbox = g.getBBox();
+      if (bbox.width > 0 || bbox.height > 0) {
+        prefCenters[id] = { cx: bbox.x + bbox.width / 2, cy: bbox.y + bbox.height / 2 };
+      }
+    } catch (e) {}
+  });
+}
+
+// 現在のADJACENCYから landAdj と seaCrossings を逆算（編集の出発点とする）
+function seedLandAdjFromAdjacency() {
+  landAdj = {};
+  seaCrossings = new Set();
+  PREFS.forEach(id => { landAdj[id] = new Set(); });
+  PREFS.forEach(id => {
+    (ADJACENCY[id] || []).forEach(other => {
+      if (landAdj[id]) landAdj[id].add(other);
+    });
+  });
+}
+
+async function detectAdjacency() {
+  const svg = document.querySelector('#map-container svg');
+  if (!svg) { setAdjStatus('detect-adj-status', 'SVGが読み込まれていません', 'err'); return; }
+  const btn = document.getElementById('detect-adj-btn');
+  btn.disabled = true;
+  setAdjStatus('detect-adj-status', '解析中...', '');
+
+  try {
+    const clone = svg.cloneNode(true);
+    clone.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
+    clone.removeAttribute('style');
+    clone.removeAttribute('class');
+    clone.querySelectorAll('[style]').forEach(el => el.removeAttribute('style'));
+    clone.querySelectorAll('[class]').forEach(el => el.removeAttribute('class'));
+
+    const bg = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+    bg.setAttribute('x', '-99999'); bg.setAttribute('y', '-99999');
+    bg.setAttribute('width', '199999'); bg.setAttribute('height', '199999');
+    bg.setAttribute('fill', '#000000');
+    clone.insertBefore(bg, clone.firstChild);
+
+    const existingPrefs = PREFS.filter(id => clone.querySelector('#' + id + '_group'));
+    existingPrefs.forEach((id, i) => {
+      const g = clone.querySelector('#' + id + '_group');
+      if (!g) return;
+      const code = i + 1;
+      const r = code & 0xFF, gv = code >> 8;
+      g.querySelectorAll('path, polygon, rect, circle, ellipse, polyline').forEach(el => {
+        el.setAttribute('fill', `rgb(${r},${gv},0)`);
+        el.setAttribute('stroke', 'none');
+        el.setAttribute('stroke-width', '0');
+        el.removeAttribute('filter');
+      });
+    });
+
+    const vb = svg.viewBox.baseVal;
+    const W = 900, H = 700;
+    clone.setAttribute('width', W);
+    clone.setAttribute('height', H);
+    if (vb && vb.width > 0) {
+      clone.setAttribute('viewBox', `${vb.x} ${vb.y} ${vb.width} ${vb.height}`);
+    }
+    clone.setAttribute('preserveAspectRatio', 'xMinYMin meet');
+
+    const svgStr = new XMLSerializer().serializeToString(clone);
+    const blob = new Blob([svgStr], { type: 'image/svg+xml;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+
+    const img = new Image();
+    await new Promise((resolve, reject) => {
+      img.onload = resolve;
+      img.onerror = () => reject(new Error('SVGの画像変換に失敗しました'));
+      img.src = url;
+    });
+
+    const canvas = document.createElement('canvas');
+    canvas.width = W; canvas.height = H;
+    const ctx = canvas.getContext('2d');
+    ctx.imageSmoothingEnabled = false;
+    ctx.drawImage(img, 0, 0, W, H);
+    URL.revokeObjectURL(url);
+
+    const data = ctx.getImageData(0, 0, W, H).data;
+
+    landAdj = {};
+    PREFS.forEach(id => { landAdj[id] = new Set(); });
+
+    function getCode(px, py) {
+      const base = (py * W + px) * 4;
+      return data[base + 1] * 256 + data[base];
+    }
+    for (let y = 0; y < H; y++) {
+      for (let x = 0; x < W; x++) {
+        const cA = getCode(x, y);
+        if (cA === 0) continue;
+        const iA = cA - 1;
+        if (iA < 0 || iA >= existingPrefs.length) continue;
+        for (const [dx, dy] of [[2,0],[-2,0],[0,2],[0,-2],[1,0],[-1,0],[0,1],[0,-1]]) {
+          const nx = x + dx, ny = y + dy;
+          if (nx < 0 || nx >= W || ny < 0 || ny >= H) continue;
+          const cB = getCode(nx, ny);
+          if (cB === 0 || cB === cA) continue;
+          const iB = cB - 1;
+          if (iB < 0 || iB >= existingPrefs.length || iB === iA) continue;
+          landAdj[existingPrefs[iA]].add(existingPrefs[iB]);
+          landAdj[existingPrefs[iB]].add(existingPrefs[iA]);
+        }
+      }
+    }
+
+    const total = PREFS.reduce((s, id) => s + (landAdj[id] ? landAdj[id].size : 0), 0) / 2;
+    setAdjStatus('detect-adj-status', `検出完了 - ${Math.round(total)}組の陸上隣接`, 'ok');
+    updateAdjOverlay();
+    updateAdjSummary();
+  } catch (e) {
+    setAdjStatus('detect-adj-status', `エラー: ${e.message}`, 'err');
+  }
+  btn.disabled = false;
+}
+
+function toggleSeaMode() {
+  seaMode = !seaMode;
+  selectedSeaPref = null;
+  clearSeaHighlight();
+  const btn = document.getElementById('sea-mode-btn');
+  btn.textContent = seaMode ? 'モードを終了' : '海峡追加モード';
+  btn.classList.toggle('active', seaMode);
+  setAdjStatus('sea-mode-status', seaMode ? '1つ目の県をクリック' : '', '');
+  updateAdjOverlay();
+}
+
+function onSeaPrefClick(prefId) {
+  if (!selectedSeaPref) {
+    selectedSeaPref = prefId;
+    setAdjStatus('sea-mode-status', `${NAMES[prefId] || prefId} を選択 - 2つ目をクリック`, '');
+    highlightSeaSelected();
+    updateAdjOverlay();
+    return;
+  }
+  if (selectedSeaPref === prefId) {
+    selectedSeaPref = null;
+    clearSeaHighlight();
+    setAdjStatus('sea-mode-status', '1つ目の県をクリック', '');
+    updateAdjOverlay();
+    return;
+  }
+  const key = [selectedSeaPref, prefId].sort().join('|');
+  const nameA = NAMES[selectedSeaPref] || selectedSeaPref;
+  const nameB = NAMES[prefId] || prefId;
+  if (seaCrossings.has(key)) {
+    seaCrossings.delete(key);
+    setAdjStatus('sea-mode-status', `${nameA} - ${nameB} の海峡を削除`, 'ok');
+  } else {
+    seaCrossings.add(key);
+    setAdjStatus('sea-mode-status', `${nameA} - ${nameB} の海峡を追加`, 'ok');
+  }
+  selectedSeaPref = null;
+  clearSeaHighlight();
+  renderSeaList();
+  updateAdjOverlay();
+  updateAdjSummary();
+}
+
+function removeSea(key) {
+  seaCrossings.delete(key);
+  renderSeaList();
+  updateAdjOverlay();
+  updateAdjSummary();
+}
+
+function renderSeaList() {
+  const el = document.getElementById('sea-list');
+  if (!el) return;
+  if (!seaCrossings.size) {
+    el.innerHTML = '<div style="color:#555;padding:4px 0;">海峡なし</div>';
+    return;
+  }
+  el.innerHTML = [...seaCrossings].sort().map(key => {
+    const [a, b] = key.split('|');
+    return `<div class="sea-item"><span style="flex:1;">${NAMES[a] || a} - ${NAMES[b] || b}</span><button class="del-btn" onclick="removeSea('${key}')">×</button></div>`;
+  }).join('');
+}
+
+function highlightSeaSelected() {
+  PREFS.forEach(id => {
+    const g = document.getElementById(id + '_group');
+    if (g) g.classList.toggle('selected', id === selectedSeaPref);
+  });
+}
+
+function clearSeaHighlight() {
+  PREFS.forEach(id => {
+    const g = document.getElementById(id + '_group');
+    if (g) g.classList.remove('selected');
+  });
+}
+
+function updateAdjOverlay() {
+  const overlay = document.getElementById('overlay-svg');
+  if (!overlay) return;
+  overlay.innerHTML = '';
+  const svg = document.querySelector('#map-container svg');
+  if (!svg) return;
+  const vb = svg.viewBox.baseVal;
+  if (!vb || vb.width === 0) return;
+  overlay.setAttribute('viewBox', `${vb.x} ${vb.y} ${vb.width} ${vb.height}`);
+  overlay.setAttribute('preserveAspectRatio', 'xMidYMid meet');
+
+  const drawnLand = new Set();
+  PREFS.forEach(a => {
+    const cA = prefCenters[a]; if (!cA) return;
+    (landAdj[a] || new Set()).forEach(b => {
+      const key = [a, b].sort().join('|');
+      if (drawnLand.has(key) || seaCrossings.has(key)) return;
+      drawnLand.add(key);
+      const cB = prefCenters[b]; if (!cB) return;
+      const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+      line.setAttribute('x1', cA.cx); line.setAttribute('y1', cA.cy);
+      line.setAttribute('x2', cB.cx); line.setAttribute('y2', cB.cy);
+      line.setAttribute('stroke', '#888'); line.setAttribute('stroke-width', '0.5');
+      line.setAttribute('opacity', '0.35');
+      overlay.appendChild(line);
+    });
+  });
+
+  seaCrossings.forEach(key => {
+    const [a, b] = key.split('|');
+    const cA = prefCenters[a], cB = prefCenters[b];
+    if (!cA || !cB) return;
+    const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+    line.setAttribute('x1', cA.cx); line.setAttribute('y1', cA.cy);
+    line.setAttribute('x2', cB.cx); line.setAttribute('y2', cB.cy);
+    line.setAttribute('stroke', '#457b9d'); line.setAttribute('stroke-width', '1.5');
+    line.setAttribute('stroke-dasharray', '5,3'); line.setAttribute('opacity', '0.9');
+    overlay.appendChild(line);
+  });
+
+  if (seaMode && selectedSeaPref && prefCenters[selectedSeaPref]) {
+    const c = prefCenters[selectedSeaPref];
+    const circle = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+    circle.setAttribute('cx', c.cx); circle.setAttribute('cy', c.cy);
+    circle.setAttribute('r', '10'); circle.setAttribute('fill', '#e94560'); circle.setAttribute('opacity', '0.5');
+    overlay.appendChild(circle);
+  }
+
+  PREFS.forEach(id => {
+    const c = prefCenters[id]; if (!c) return;
+    const dot = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+    dot.setAttribute('cx', c.cx); dot.setAttribute('cy', c.cy);
+    dot.setAttribute('r', '2'); dot.setAttribute('fill', '#a8dadc'); dot.setAttribute('opacity', '0.5');
+    overlay.appendChild(dot);
+  });
+}
+
+function updateAdjSummary() {
+  const el = document.getElementById('adj-summary');
+  if (!el) return;
+  let landTotal = 0;
+  PREFS.forEach(id => { landTotal += (landAdj[id] || new Set()).size; });
+  landTotal = Math.round(landTotal / 2);
+  el.innerHTML = `陸上隣接: ${landTotal} 組<br>海峡: ${seaCrossings.size} 組`;
+}
+
+function buildEffectiveAdjacency() {
+  const eff = {};
+  PREFS.forEach(id => {
+    eff[id] = [...new Set([...(landAdj[id] || [])])];
+  });
+  seaCrossings.forEach(key => {
+    const [a, b] = key.split('|');
+    if (eff[a] && !eff[a].includes(b)) eff[a].push(b);
+    if (eff[b] && !eff[b].includes(a)) eff[b].push(a);
+  });
+  return eff;
+}
+
+async function saveAdjacencyToFirebase() {
+  const btn = document.getElementById('save-adj-btn');
+  btn.disabled = true;
+  setAdjStatus('save-adj-status', '隣接保存中...', '');
+  try {
+    const eff = buildEffectiveAdjacency();
+    await ADJ_REF.set(eff);
+    ADJACENCY = eff;
+    setAdjStatus('save-adj-status', '隣接データ保存完了 ✓', 'ok');
+  } catch (e) {
+    setAdjStatus('save-adj-status', `保存失敗: ${e.message}`, 'err');
+  }
+  btn.disabled = false;
+}
+
+async function saveMapToFirebase() {
+  const btn = document.getElementById('save-map-btn');
+  const adjBtn = document.getElementById('save-adj-btn');
+  btn.disabled = true; adjBtn.disabled = true;
+  setAdjStatus('save-adj-status', 'SVG＋隣接を保存中...', '');
+  try {
+    const svg = document.querySelector('#map-container svg');
+    if (!svg) throw new Error('SVGが読み込まれていません');
+    const svgStr = new XMLSerializer().serializeToString(svg);
+    if (svgStr.length > 9 * 1024 * 1024) {
+      throw new Error(`SVGが大きすぎます（${(svgStr.length/1024/1024).toFixed(1)}MB）`);
+    }
+    const eff = buildEffectiveAdjacency();
+    await Promise.all([SVG_REF.set(svgStr), ADJ_REF.set(eff)]);
+    ADJACENCY = eff;
+    setAdjStatus('save-adj-status', `保存完了 ✓ （SVG: ${(svgStr.length/1024).toFixed(1)}KB, 隣接: ${PREFS.length}エリア）`, 'ok');
+  } catch (e) {
+    setAdjStatus('save-adj-status', `保存失敗: ${e.message}`, 'err');
+  }
+  btn.disabled = false; adjBtn.disabled = false;
 }
 
 // ============================================================
@@ -1400,7 +1870,7 @@ function showTip(prefId) {
   const cid = gameState.territories[prefId];
   const c = cid ? gameState.countries.find(x => x.id === cid) : null;
   tooltip.style.display = 'block';
-  tooltip.textContent = NAMES[prefId] + (c ? ` — ${c.name}` : ' — 未割当');
+  tooltip.textContent = (NAMES[prefId] || prefId) + (c ? ` — ${c.name}` : ' — 未割当');
 }
 function hideTip() { tooltip.style.display = 'none'; }
 
@@ -1466,7 +1936,7 @@ function renderEditArmyList(cid) {
   el.innerHTML = armies.units.map(u => {
     const prefOptions = '<option value="">未配置</option>' +
       (u.location && isBorder(u.location) ? `<option value="${u.location}" selected>${locName(u.location)}（県境）</option>` : '') +
-      PREFS.map(p => `<option value="${p}" ${u.location === p ? 'selected' : ''}>${NAMES[p]}</option>`).join('');
+      PREFS.map(p => `<option value="${p}" ${u.location === p ? 'selected' : ''}>${NAMES[p] || p}</option>`).join('');
     const atkOpts = ATK_STRATEGY_NAMES.map(s => `<option value="${s}" ${u.atkStrategy === s ? 'selected' : ''}>${s}</option>`).join('');
     const defOpts = DEF_STRATEGY_NAMES.map(s => `<option value="${s}" ${u.defStrategy === s ? 'selected' : ''}>${s}</option>`).join('');
     return `
@@ -1651,8 +2121,11 @@ let adminZoomScale = 1, adminPanX = 0, adminPanY = 0;
 let adminMapWasDragging = false;
 
 function applyAdminTransform() {
+  const t = `translate(${adminPanX}px,${adminPanY}px) scale(${adminZoomScale})`;
   const c = document.getElementById('map-container');
-  if (c) c.style.transform = `translate(${adminPanX}px,${adminPanY}px) scale(${adminZoomScale})`;
+  if (c) c.style.transform = t;
+  const o = document.getElementById('overlay-svg');
+  if (o) o.style.transform = t;
 }
 
 function adminZoomAt(cx, cy, factor) {
