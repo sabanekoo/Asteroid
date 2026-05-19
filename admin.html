@@ -1703,31 +1703,58 @@ async function detectAdjacency() {
       const base = (py * W + px) * 4;
       return data[base + 1] * 256 + data[base];
     }
-    // 1ペアあたりの接触ピクセル数をカウント。閾値未満は単発ノイズとして無視
+
+    // === Step 1: コアピクセル判定（AAノイズ除去） ===
+    // 3×3 近傍の過半数(5+)が同じコードなら「コア」と判定。AA境界の偽コードはコアにならない。
+    const isCore = new Uint8Array(W * H);
+    for (let y = 1; y < H - 1; y++) {
+      for (let x = 1; x < W - 1; x++) {
+        const c = getCode(x, y);
+        if (c === 0) continue;
+        let cnt = 0;
+        for (let dy = -1; dy <= 1; dy++) {
+          for (let dx = -1; dx <= 1; dx++) {
+            if (getCode(x + dx, y + dy) === c) cnt++;
+          }
+        }
+        if (cnt >= 5) isCore[y * W + x] = 1;
+      }
+    }
+
+    // === Step 2: 隣接スキャン ===
+    // 各コアピクセルから右・下方向にスキャン。AA(非コア)は読み飛ばし、
+    // 背景(コード0)や同一領域に当たったら打ち切り、別領域コアに当たったら隣接記録。
     const contactCount = new Map();
-    const NEIGHBORS = [[1,0],[-1,0],[0,1],[0,-1]];
+    const MAX_DIST = Math.max(4, Math.round((W + H) / 700)); // 解像度に応じてAAスキップ可能距離を決定
     for (let y = 0; y < H; y++) {
       for (let x = 0; x < W; x++) {
+        if (!isCore[y * W + x]) continue;
         const cA = getCode(x, y);
-        if (cA === 0) continue;
         const iA = cA - 1;
         if (iA < 0 || iA >= existingPrefs.length) continue;
-        for (const [dx, dy] of NEIGHBORS) {
-          const nx = x + dx, ny = y + dy;
-          if (nx < 0 || nx >= W || ny < 0 || ny >= H) continue;
-          const cB = getCode(nx, ny);
-          if (cB === 0 || cB === cA) continue;
-          const iB = cB - 1;
-          if (iB < 0 || iB >= existingPrefs.length || iB === iA) continue;
-          const lo = iA < iB ? iA : iB;
-          const hi = iA < iB ? iB : iA;
-          const k = lo * 65536 + hi;
-          contactCount.set(k, (contactCount.get(k) || 0) + 1);
+
+        for (const [dx, dy] of [[1, 0], [0, 1]]) {
+          for (let d = 1; d <= MAX_DIST; d++) {
+            const nx = x + d * dx, ny = y + d * dy;
+            if (nx < 0 || nx >= W || ny < 0 || ny >= H) break;
+            const cB = getCode(nx, ny);
+            if (cB === 0) break;            // 背景（海など） → 隣接ではない
+            if (!isCore[ny * W + nx]) continue; // AA → 読み飛ばし
+            if (cB === cA) break;            // 同領域に再到達 → 終了
+            const iB = cB - 1;
+            if (iB < 0 || iB >= existingPrefs.length) break;
+            const lo = iA < iB ? iA : iB;
+            const hi = iA < iB ? iB : iA;
+            const k = lo * 65536 + hi;
+            contactCount.set(k, (contactCount.get(k) || 0) + 1);
+            break;
+          }
         }
       }
     }
+
     // 接触閾値: 解像度に応じて緩和（小さな島同士は接触ピクセルが少ない）
-    const CONTACT_THRESHOLD = Math.max(2, Math.round((W + H) / 1200));
+    const CONTACT_THRESHOLD = Math.max(3, Math.round((W + H) / 1200));
     contactCount.forEach((count, k) => {
       if (count < CONTACT_THRESHOLD) return;
       const lo = Math.floor(k / 65536);
@@ -1737,7 +1764,7 @@ async function detectAdjacency() {
     });
 
     const total = PREFS.reduce((s, id) => s + (landAdj[id] ? landAdj[id].size : 0), 0) / 2;
-    setAdjStatus('detect-adj-status', `検出完了 - ${Math.round(total)}組（${W}×${H}px, 閾値${CONTACT_THRESHOLD}px）`, 'ok');
+    setAdjStatus('detect-adj-status', `検出完了 - ${Math.round(total)}組（${W}×${H}px, スキャン${MAX_DIST}px, 閾値${CONTACT_THRESHOLD}px）`, 'ok');
     updateAdjOverlay();
     updateAdjSummary();
   } catch (e) {
