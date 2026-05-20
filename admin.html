@@ -920,58 +920,50 @@ function buildArmyStates() {
   return states;
 }
 
-// 国家守備隊を脅威が迫っている自国前線に自動配備
-function deployNationalGuard(states, log) {
+// 補助防衛：進行中の全防衛戦闘にクローンを送り込む（ラウンドループ内で毎ラウンド呼ばれる）
+// auxPool: { countryId: 残余兵力 }
+// auxClones: { cloneId: countryId }
+function addAuxDefenseToBattles(states, battles, log, round, auxPool, auxClones) {
   gameState.countries.forEach(country => {
-    const guardStates = Object.values(states).filter(s =>
-      s.countryId === country.id && s.nationalGuard && !s.eliminated && s.troops > 0
-    );
-    if (!guardStates.length) return;
+    const pool = auxPool[country.id] || 0;
+    if (pool <= 0) return;
 
-    const totalTroops = guardStates.reduce((sum, s) => sum + s.troops, 0);
-    if (totalTroops <= 0) return;
-
-    // 自国領土で敵軍が隣接または侵入している前線県を特定
-    const myPrefs = PREFS.filter(p => gameState.territories[p] === country.id);
-    const threatPrefs = myPrefs.filter(p =>
-      Object.values(states).some(s =>
-        !s.eliminated && s.countryId !== country.id &&
-        (s.location === p || (ADJACENCY[p] || []).includes(s.location) ||
-          (isBorder(s.location) && s.location.split('|').includes(p)))
-      )
-    );
-
-    const targets = threatPrefs.length > 0 ? threatPrefs : (myPrefs.length > 0 ? [myPrefs[0]] : []);
-    if (!targets.length) return;
-
-    const n = targets.length;
-    const baseTroops = Math.floor(totalTroops / n);
-
-    // 複数前線に守備隊を分散配備
-    targets.forEach((pref, i) => {
-      let guardSt;
-      if (i < guardStates.length) {
-        guardSt = guardStates[i];
-      } else {
-        // 仮想サブユニットを生成
-        const base = guardStates[0];
-        guardSt = Object.assign({}, base, { id: base.id + '_sub_' + i, troops: 0 });
-        states[guardSt.id] = guardSt;
-      }
-      const troops = (i === n - 1)
-        ? Math.max(1, totalTroops - baseTroops * (n - 1))
-        : baseTroops;
-      guardSt.location = pref;
-      guardSt.troops = troops;
-      guardSt.ap = 20;
-      guardSt.mode = 'defend';
-      guardSt.activeOrder = null;
+    // 自国領土で進行中の戦闘のうち、まだ補助防衛クローンが参加していないものを探す
+    const newBattles = battles.filter(b => {
+      if (b.resolved) return false;
+      const locs = isBorder(b.location) ? b.location.split('|') : [b.location];
+      const inFriendly = locs.some(p => gameState.territories[p] === country.id);
+      if (!inFriendly) return false;
+      return !b.parts.some(p => auxClones[p.id] === country.id);
     });
+    if (!newBattles.length) return;
 
-    // 余ったオリジナルguardStatesを無効化
-    guardStates.slice(targets.length).forEach(s => { s.troops = 0; s.eliminated = true; });
+    const n = newBattles.length;
+    const base = Math.floor(pool / n);
+    let remaining = pool;
 
-    log.push({ type: 'info', text: `${country.name}の国家守備隊（計${totalTroops}名）が${targets.map(p => NAMES[p] || p).join('・')}に配備` });
+    newBattles.forEach((b, i) => {
+      const troops = (i === n - 1) ? remaining : Math.min(base, remaining);
+      remaining -= troops;
+      if (troops <= 0) return;
+
+      const cloneId = `_aux_${country.id}_${b.id}`;
+      states[cloneId] = {
+        id: cloneId, countryId: country.id, name: '補助防衛隊',
+        troops, origTroops: troops,
+        location: b.location, ap: 20, mode: 'defend',
+        nationalGuard: true, atkStrategy: '通常攻勢', defStrategy: '通常防衛',
+        specialUnits: [], activeOrder: null, pathStep: 0,
+        inBattle: b.id, role: 'defender',
+        cameFrom: null, headingTo: null,
+        movedThisRound: false, frozenUntil: 0,
+        eliminated: false, wonThisTurn: false
+      };
+      b.parts.push({ id: cloneId, role: 'defender' });
+      auxClones[cloneId] = country.id;
+      auxPool[country.id] -= troops;
+      log.push({ type: 'info', text: `${country.name}の補助防衛隊（${troops}名）が${locName(b.location)}の防衛戦に参加` });
+    });
   });
 }
 
@@ -1218,6 +1210,16 @@ function resolveBattleRound(b, states, log, round) {
       if (Math.random() < chance) startRetreat(st, dest, log);
     });
   });
+
+  // 補助防衛隊：勝敗に関わらず高確率で撤退（弱く、すぐ退く）
+  alive.forEach(({ st }) => {
+    if (!st.nationalGuard || st.inBattle !== b.id || st.eliminated) return;
+    if (Math.random() < 0.70) {
+      const dest = retreatDestPref(st, states);
+      if (dest) startRetreat(st, dest, log);
+      else { st.eliminated = true; st.troops = 0; st.inBattle = null; }
+    }
+  });
 }
 
 // SAFETYに達した場合の戦闘打ち切り
@@ -1256,8 +1258,16 @@ async function processTurn() {
   await sleep(50);
   const states = buildArmyStates();
 
-  // 国家守備隊を前線に自動配備
-  deployNationalGuard(states, log);
+  // 補助防衛の兵力プールを初期化（実体unitを待機状態にしてプールに移す）
+  const auxPool = {}, auxClones = {};
+  gameState.countries.forEach(country => {
+    const auxUnits = Object.values(states).filter(s =>
+      s.countryId === country.id && s.nationalGuard && !s.eliminated && s.troops > 0
+    );
+    if (!auxUnits.length) return;
+    auxPool[country.id] = auxUnits.reduce((sum, s) => sum + s.troops, 0);
+    auxUnits.forEach(s => { s.troops = 0; s.eliminated = true; s.location = null; });
+  });
 
   // 1. ランダムイベント（各国20%で特殊部隊が出現）
   gameState.countries.forEach(c => {
@@ -1395,6 +1405,9 @@ async function processTurn() {
       });
     }
 
+    // --- PHASE 2.5: 補助防衛隊を全ての防衛戦闘に自動参加させる ---
+    addAuxDefenseToBattles(states, battles, log, round, auxPool, auxClones);
+
     // --- PHASE 3: 敵がおらず県（県境でない）にいる軍は占領 ---
     for (const st of Object.values(states)) {
       if (st.eliminated || st.inBattle || !st.location || isBorder(st.location)) continue;
@@ -1428,43 +1441,43 @@ async function processTurn() {
   // 残った戦闘を打ち切り
   battles.forEach(b => { if (!b.resolved) forceResolveBattle(b, states, log); });
 
+  // 補助防衛クローンの残存兵力を国ごとに集計
+  const auxSurvived = {};
+  Object.entries(auxClones).forEach(([cloneId, countryId]) => {
+    const st = states[cloneId];
+    if (st && !st.eliminated && st.troops > 0)
+      auxSurvived[countryId] = (auxSurvived[countryId] || 0) + Math.max(0, Math.round(st.troops));
+  });
+
   // 4. 軍隊状態をゲームデータへ反映（全滅した軍は枠ごと削除）
   gameState.countries.forEach(country => {
     const ad = gameState.armies[country.id];
     if (!ad) return;
-    const myStates = Object.values(states).filter(s => s.countryId === country.id);
-    // 守備隊の仮想サブユニット（_sub_を含むid）の残存兵力を元ユニットに統合
-    const guardTroopMerge = {};
-    myStates.forEach(s => {
-      const subMatch = s.id.match(/^(.+)_sub_\d+$/);
-      if (subMatch) {
-        const origId = subMatch[1];
-        guardTroopMerge[origId] = (guardTroopMerge[origId] || 0) + (s.eliminated ? 0 : Math.max(0, Math.round(s.troops)));
-      }
-    });
-    // 元守備隊ユニットの兵力を統合値で更新
-    myStates.forEach(s => {
-      if (s.nationalGuard && guardTroopMerge[s.id] !== undefined) {
-        s.troops = (s.eliminated ? 0 : Math.max(0, Math.round(s.troops))) + (guardTroopMerge[s.id] || 0);
-        if (s.troops > 0) s.eliminated = false;
-      }
-    });
-
-    const realStates = myStates.filter(s => !s.id.includes('_sub_'));
-    realStates.filter(s => s.eliminated).forEach(s => {
+    // auxClones（仮想クローン）を除いた通常ユニット
+    const myStates = Object.values(states).filter(s =>
+      s.countryId === country.id && !auxClones[s.id]
+    );
+    // 通常ユニットの全滅ログ（nationalGuardの「parked」状態は除く）
+    myStates.filter(s => s.eliminated && !s.nationalGuard).forEach(s => {
       log.push({ type: 'battle', text: `${country.name}の${s.name}は全滅し、軍隊が解体された` });
     });
-    ad.units = realStates.filter(s => !s.eliminated).map(s => ({
-      id: s.id, name: s.name,
-      troops: Math.max(0, Math.round(s.troops)),
-      location: s.nationalGuard ? null : (s.location == null ? null : s.location),
-      ap: s.nationalGuard ? 20 : 50, mode: 'idle',
-      specialUnits: s.specialUnits || [],
-      atkStrategy: s.atkStrategy || '通常攻勢',
-      defStrategy: s.defStrategy || '通常防衛',
-      nationalGuard: s.nationalGuard || false,
-      orders: []
-    }));
+    // 補助防衛ユニット: 元の枠にクローン生存兵力＋未使用プール兵力を還元
+    const auxReturn = (auxSurvived[country.id] || 0) + (auxPool[country.id] || 0);
+    let auxReturnGiven = false;
+    ad.units = myStates.map(s => {
+      if (s.nationalGuard) {
+        const troops = auxReturnGiven ? 0 : auxReturn;
+        auxReturnGiven = true;
+        return { id: s.id, name: s.name, troops, location: null, ap: 20, mode: 'idle',
+          specialUnits: s.specialUnits || [], atkStrategy: s.atkStrategy || '通常攻勢',
+          defStrategy: s.defStrategy || '通常防衛', nationalGuard: true, orders: [] };
+      }
+      return { id: s.id, name: s.name,
+        troops: Math.max(0, Math.round(s.troops)),
+        location: s.location == null ? null : s.location, ap: 50, mode: 'idle',
+        specialUnits: s.specialUnits || [], atkStrategy: s.atkStrategy || '通常攻勢',
+        defStrategy: s.defStrategy || '通常防衛', nationalGuard: false, orders: [] };
+    }).filter(u => u.nationalGuard || !myStates.find(s => s.id === u.id && s.eliminated));
   });
 
   // 5. 兵士収入（1県 = 5名）
