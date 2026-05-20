@@ -201,9 +201,10 @@
       .settings-form { gap: 8px; max-width: 100%; }
 
       /* HQ: 縦並び */
-      #page-hq .content-area { flex-direction: column; overflow: auto; }
-      #hq-sidebar { width: 100%; min-width: 0; border-right: none; border-bottom: 1px solid #0f3460; max-height: 50vh; overflow-y: auto; }
+      #page-hq .content-area { flex-direction: column; overflow-y: auto; height: auto; }
+      #hq-sidebar { width: 100%; min-width: 0; border-right: none; border-bottom: 1px solid #0f3460; max-height: none; height: auto; overflow-y: visible; flex-shrink: 0; }
       #hq-map { flex: none; height: 44vh; }
+      #hq-order-list { max-height: 200px; min-height: 60px; overflow-y: auto; }
     }
   </style>
 </head>
@@ -407,7 +408,7 @@
 
       <!-- 諜報 -->
       <div class="hq-section">
-        <h3>諜報（1ターン1回）</h3>
+        <h3>諜報（1ターン4回）</h3>
         <div style="display:flex;flex-direction:column;gap:6px;">
           <div style="font-size:11px;color:#888;">成功率25%、発覚率50%。地図をクリックして対象県を選択。</div>
           <div style="display:flex;gap:6px;align-items:center;">
@@ -698,11 +699,12 @@ function normalizeGameState(gs) {
     ad.units.forEach(u => {
       if (!u.id) u.id = uid();
       if (u.troops == null) u.troops = 0;
-      if (u.ap == null) u.ap = 50;
+      if (u.ap == null) u.ap = u.nationalGuard ? 20 : 50;
       if (!u.mode) u.mode = 'idle';
       if (!u.specialUnits) u.specialUnits = [];
       if (!u.atkStrategy) u.atkStrategy = '通常攻勢';
       if (!u.defStrategy) u.defStrategy = '通常防衛';
+      if (u.nationalGuard == null) u.nationalGuard = false;
     });
   });
   gs.pendingOrders.forEach(o => {
@@ -762,6 +764,22 @@ async function syncData() {
 async function saveOrders() {
   if (!gameState) return;
   try {
+    // 最新のサーバーデータを取得してからマージ（複数人同時操作による上書きを防止）
+    const snap = await GAME_REF.get();
+    if (snap.exists()) {
+      const serverState = normalizeGameState(snap.val());
+      // 他国の軍隊・命令はサーバー側を使い、自国分のみローカルで上書き
+      serverState.armies[myCountryId] = gameState.armies[myCountryId];
+      serverState.pendingOrders = [
+        ...(serverState.pendingOrders || []).filter(o => o.countryId !== myCountryId),
+        ...(gameState.pendingOrders || []).filter(o => o.countryId === myCountryId)
+      ];
+      if (!serverState.spyResults) serverState.spyResults = {};
+      if (gameState.spyResults && gameState.spyResults[myCountryId]) {
+        serverState.spyResults[myCountryId] = gameState.spyResults[myCountryId];
+      }
+      gameState = serverState;
+    }
     await GAME_REF.set(gameState);
     alert('命令を保存しました');
   } catch (e) {
@@ -854,7 +872,7 @@ function ensureArmies() {
   gameState.armies[myCountryId].units.forEach(u => {
     if (!u.id) u.id = uid();
     if (u.troops == null) u.troops = 0;
-    if (u.ap == null) u.ap = 50;
+    if (u.ap == null) u.ap = u.nationalGuard ? 20 : 50;
     if (!u.mode) u.mode = 'idle';
     if (!u.specialUnits) u.specialUnits = [];
     if (!u.atkStrategy) u.atkStrategy = '通常攻勢';
@@ -960,6 +978,26 @@ function renderArmies() {
     const specialHtml = (a.specialUnits && a.specialUnits.length)
       ? `<div class="special-units">${a.specialUnits.map(u => `<span class="unit-badge">${u}</span>`).join('')}</div>`
       : '';
+    if (a.nationalGuard) {
+      return `<div class="army-card" style="border-color:#f4a261;">
+        <div class="army-header">
+          <div class="army-name">${a.name} <span style="font-size:11px;color:#f4a261;font-weight:normal;">（国家守備隊）</span></div>
+          <span class="army-mode mode-idle">自動配備</span>
+        </div>
+        <div class="army-stats">
+          <span>兵力: <strong>${a.troops}</strong>名</span>
+          <span>行動力: <strong>${a.ap !== undefined ? a.ap : 20}</strong>/20</span>
+        </div>
+        ${specialHtml}
+        <div style="font-size:11px;color:#888;margin-top:6px;line-height:1.5;">
+          ターン処理時に自国の脅威を受けている前線へ自動配備されます。<br>戦闘力は通常の50%ですが、広い前線をカバーします。
+        </div>
+        <div class="deploy-row" style="margin-top:8px;">
+          <input type="number" class="deploy-input" id="deploy-amt-${a.id}" min="1" placeholder="人数" />
+          <button class="btn btn-sm btn-blue" onclick="deployTroops('${a.id}')">兵力補充</button>
+        </div>
+      </div>`;
+    }
     const atkOpts = ATK_STRATEGY_NAMES.map(s => `<option value="${s}" ${a.atkStrategy === s ? 'selected' : ''}>${s}</option>`).join('');
     const defOpts = DEF_STRATEGY_NAMES.map(s => `<option value="${s}" ${a.defStrategy === s ? 'selected' : ''}>${s}</option>`).join('');
     return `<div class="army-card ${cardClass}">
@@ -1210,6 +1248,13 @@ function clearPath() {
 function addOrder() {
   const a = getSelArmy();
   if (!a) { alert('軍隊を選択してください'); return; }
+
+  // 国家守備隊は命令不可（自動配備）
+  if (a.nationalGuard) {
+    alert('国家守備隊はターン処理時に自動配備されます。命令を出すことはできません。');
+    return;
+  }
+
   const orderType = document.getElementById('hq-order-type').value;
   const startRound = Math.max(0, parseInt(document.getElementById('hq-start-time').value) || 0);
 
@@ -1283,7 +1328,8 @@ function startSpySelect() {
 async function doSpyAction() {
   if (!spyTargetPref) { alert('地図から諜報対象の県を選択してください'); return; }
   const mySpyResults = (gameState.spyResults && gameState.spyResults[myCountryId]) || [];
-  if (mySpyResults.some(r => r.turn === gameState.turn)) { alert('このターンはすでに諜報を実行しました'); return; }
+  const spyUsedCount = mySpyResults.filter(r => r.turn === gameState.turn).length;
+  if (spyUsedCount >= 4) { alert('このターンの諜報回数上限（4回）に達しました'); return; }
 
   const btn = document.getElementById('spy-btn');
   btn.disabled = true; btn.textContent = '処理中...';
@@ -1348,8 +1394,9 @@ async function doSpyAction() {
 function updateSpyUI() {
   const btn = document.getElementById('spy-btn');
   const mySpyResults = (gameState.spyResults && gameState.spyResults[myCountryId]) || [];
-  const usedThisTurn = mySpyResults.some(r => r.turn === gameState.turn);
-  if (btn) { btn.disabled = usedThisTurn; btn.textContent = usedThisTurn ? '実行済み' : '諜報実行'; }
+  const spyCount = mySpyResults.filter(r => r.turn === gameState.turn).length;
+  const usedThisTurn = spyCount >= 4;
+  if (btn) { btn.disabled = usedThisTurn; btn.textContent = usedThisTurn ? `実行済み(${spyCount}/4)` : `諜報実行(${spyCount}/4)`; }
 
   const resultsEl = document.getElementById('spy-results');
   if (!resultsEl) return;

@@ -423,6 +423,14 @@
           <button class="btn btn-dark btn-full" onclick="resetGame()">ゲームをリセット</button>
         </div>
         <div class="section">
+          <h2>一括予備兵配布</h2>
+          <div style="display:flex;gap:6px;align-items:center;">
+            <input type="number" class="field-input" id="bulk-reserve-input" min="1" placeholder="配布数" style="flex:1;" />
+            <button class="btn btn-sm btn-blue" onclick="distributeReserveToAll()">全国に配布</button>
+          </div>
+          <div style="font-size:11px;color:#888;margin-top:4px;">指定した数の予備兵力を全国一括配布します</div>
+        </div>
+        <div class="section">
           <h2>収入プレビュー</h2>
           <div id="income-preview" style="font-size:12px;color:#aaa;line-height:1.8;"></div>
         </div>
@@ -896,11 +904,12 @@ function buildArmyStates() {
       states[unit.id] = {
         id: unit.id, countryId: country.id, name: unit.name || '軍',
         troops: unit.troops || 0, origTroops: unit.troops || 0,
-        location: unit.location == null ? null : unit.location, ap: 50,
+        location: unit.location == null ? null : unit.location, ap: unit.nationalGuard ? 20 : 50,
         mode: unit.mode || 'idle',
         atkStrategy: unit.atkStrategy || '通常攻勢',
         defStrategy: unit.defStrategy || '通常防衛',
         specialUnits: [...(unit.specialUnits || [])],
+        nationalGuard: unit.nationalGuard || false,
         activeOrder: null, pathStep: 0,
         inBattle: null, role: null, cameFrom: null,
         movedThisRound: false, frozenUntil: 0,
@@ -911,9 +920,65 @@ function buildArmyStates() {
   return states;
 }
 
+// 国家守備隊を脅威が迫っている自国前線に自動配備
+function deployNationalGuard(states, log) {
+  gameState.countries.forEach(country => {
+    const guardStates = Object.values(states).filter(s =>
+      s.countryId === country.id && s.nationalGuard && !s.eliminated && s.troops > 0
+    );
+    if (!guardStates.length) return;
+
+    const totalTroops = guardStates.reduce((sum, s) => sum + s.troops, 0);
+    if (totalTroops <= 0) return;
+
+    // 自国領土で敵軍が隣接または侵入している前線県を特定
+    const myPrefs = PREFS.filter(p => gameState.territories[p] === country.id);
+    const threatPrefs = myPrefs.filter(p =>
+      Object.values(states).some(s =>
+        !s.eliminated && s.countryId !== country.id &&
+        (s.location === p || (ADJACENCY[p] || []).includes(s.location) ||
+          (isBorder(s.location) && s.location.split('|').includes(p)))
+      )
+    );
+
+    const targets = threatPrefs.length > 0 ? threatPrefs : (myPrefs.length > 0 ? [myPrefs[0]] : []);
+    if (!targets.length) return;
+
+    const n = targets.length;
+    const baseTroops = Math.floor(totalTroops / n);
+
+    // 複数前線に守備隊を分散配備
+    targets.forEach((pref, i) => {
+      let guardSt;
+      if (i < guardStates.length) {
+        guardSt = guardStates[i];
+      } else {
+        // 仮想サブユニットを生成
+        const base = guardStates[0];
+        guardSt = Object.assign({}, base, { id: base.id + '_sub_' + i, troops: 0 });
+        states[guardSt.id] = guardSt;
+      }
+      const troops = (i === n - 1)
+        ? Math.max(1, totalTroops - baseTroops * (n - 1))
+        : baseTroops;
+      guardSt.location = pref;
+      guardSt.troops = troops;
+      guardSt.ap = 20;
+      guardSt.mode = 'defend';
+      guardSt.activeOrder = null;
+    });
+
+    // 余ったオリジナルguardStatesを無効化
+    guardStates.slice(targets.length).forEach(s => { s.troops = 0; s.eliminated = true; });
+
+    log.push({ type: 'info', text: `${country.name}の国家守備隊（計${totalTroops}名）が${targets.map(p => NAMES[p] || p).join('・')}に配備` });
+  });
+}
+
 // 攻撃側ボーナス（特殊部隊 + 攻撃作戦）
 function calcAtkBonus(state) {
   let b = atkStrat(state.atkStrategy).atk;
+  if (state.nationalGuard) b *= 0.5; // 国家守備隊デバフ
   (state.specialUnits || []).forEach(n => {
     const ev = EVENTS.find(e => e.name === n);
     if (ev && (ev.type === 'attack' || ev.type === 'all')) b *= ev.bonus;
@@ -925,6 +990,7 @@ function calcAtkBonus(state) {
 function calcDefBonus(state, isDefensive) {
   let b = (isDefensive ? 1.5 : 1) * defStrat(state.defStrategy).def;
   if (state.mode === 'defend') b *= 1.4; // 防衛配置ボーナス
+  if (state.nationalGuard) b *= 0.5; // 国家守備隊デバフ
   (state.specialUnits || []).forEach(n => {
     const ev = EVENTS.find(e => e.name === n);
     if (ev && (ev.type === 'defense' || ev.type === 'all')) b *= ev.bonus;
@@ -1190,6 +1256,9 @@ async function processTurn() {
   await sleep(50);
   const states = buildArmyStates();
 
+  // 国家守備隊を前線に自動配備
+  deployNationalGuard(states, log);
+
   // 1. ランダムイベント（各国20%で特殊部隊が出現）
   gameState.countries.forEach(c => {
     if (Math.random() < 0.20) {
@@ -1364,16 +1433,36 @@ async function processTurn() {
     const ad = gameState.armies[country.id];
     if (!ad) return;
     const myStates = Object.values(states).filter(s => s.countryId === country.id);
-    myStates.filter(s => s.eliminated).forEach(s => {
+    // 守備隊の仮想サブユニット（_sub_を含むid）の残存兵力を元ユニットに統合
+    const guardTroopMerge = {};
+    myStates.forEach(s => {
+      const subMatch = s.id.match(/^(.+)_sub_\d+$/);
+      if (subMatch) {
+        const origId = subMatch[1];
+        guardTroopMerge[origId] = (guardTroopMerge[origId] || 0) + (s.eliminated ? 0 : Math.max(0, Math.round(s.troops)));
+      }
+    });
+    // 元守備隊ユニットの兵力を統合値で更新
+    myStates.forEach(s => {
+      if (s.nationalGuard && guardTroopMerge[s.id] !== undefined) {
+        s.troops = (s.eliminated ? 0 : Math.max(0, Math.round(s.troops))) + (guardTroopMerge[s.id] || 0);
+        if (s.troops > 0) s.eliminated = false;
+      }
+    });
+
+    const realStates = myStates.filter(s => !s.id.includes('_sub_'));
+    realStates.filter(s => s.eliminated).forEach(s => {
       log.push({ type: 'battle', text: `${country.name}の${s.name}は全滅し、軍隊が解体された` });
     });
-    ad.units = myStates.filter(s => !s.eliminated).map(s => ({
+    ad.units = realStates.filter(s => !s.eliminated).map(s => ({
       id: s.id, name: s.name,
       troops: Math.max(0, Math.round(s.troops)),
-      location: s.location == null ? null : s.location, ap: 50, mode: 'idle',
+      location: s.nationalGuard ? null : (s.location == null ? null : s.location),
+      ap: s.nationalGuard ? 20 : 50, mode: 'idle',
       specialUnits: s.specialUnits || [],
       atkStrategy: s.atkStrategy || '通常攻勢',
       defStrategy: s.defStrategy || '通常防衛',
+      nationalGuard: s.nationalGuard || false,
       orders: []
     }));
   });
@@ -2035,7 +2124,9 @@ function renderEditPanel() {
 function renderEditArmyList(cid) {
   const el = document.getElementById('edit-army-list');
   const armies = gameState.armies && gameState.armies[cid];
-  const addBtn = `<button class="btn btn-sm btn-green btn-full" onclick="addArmyUnit('${cid}')">＋ 軍隊を創設</button>`;
+  const hasGuard = armies && armies.units && armies.units.some(u => u.nationalGuard);
+  const addBtn = `<button class="btn btn-sm btn-green btn-full" onclick="addArmyUnit('${cid}')">＋ 軍隊を創設</button>`
+    + (hasGuard ? '' : ` <button class="btn btn-sm btn-orange btn-full" style="margin-top:4px;" onclick="addGuardUnit('${cid}')">＋ 国家守備隊を設置</button>`);
   if (!armies || !armies.units) {
     el.innerHTML = '<div style="color:#555;font-size:12px;margin-bottom:6px;">軍隊データなし</div>' + addBtn;
     return;
@@ -2048,9 +2139,9 @@ function renderEditArmyList(cid) {
     const atkOpts = ATK_STRATEGY_NAMES.map(s => `<option value="${s}" ${u.atkStrategy === s ? 'selected' : ''}>${s}</option>`).join('');
     const defOpts = DEF_STRATEGY_NAMES.map(s => `<option value="${s}" ${u.defStrategy === s ? 'selected' : ''}>${s}</option>`).join('');
     return `
-    <div style="background:#0f3460;border-radius:6px;padding:8px 10px;">
+    <div style="background:#0f3460;border-radius:6px;padding:8px 10px;${u.nationalGuard ? 'border:1px solid #f4a261;' : ''}">
       <div style="display:flex;align-items:center;gap:6px;margin-bottom:6px;">
-        <span style="font-size:11px;font-weight:bold;color:#a8dadc;flex:1;">${u.name}</span>
+        <span style="font-size:11px;font-weight:bold;color:${u.nationalGuard ? '#f4a261' : '#a8dadc'};flex:1;">${u.name}${u.nationalGuard ? ' 〔国家守備隊〕' : ''}</span>
         <button class="btn btn-sm btn-red" onclick="deleteArmyUnit('${cid}','${u.id}')" title="削除">×</button>
       </div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:5px;margin-bottom:6px;">
@@ -2109,6 +2200,20 @@ function saveReserve() {
   alert('予備兵力を更新しました');
 }
 
+function distributeReserveToAll() {
+  const amt = parseInt(document.getElementById('bulk-reserve-input').value);
+  if (isNaN(amt) || amt <= 0) { alert('正しい数値を入力してください'); return; }
+  if (!confirm(`全${gameState.countries.length}国に${amt}名ずつ予備兵力を配布しますか？`)) return;
+  gameState.countries.forEach(c => {
+    if (!gameState.armies[c.id]) gameState.armies[c.id] = { reserve: 0, units: [] };
+    gameState.armies[c.id].reserve = (gameState.armies[c.id].reserve || 0) + amt;
+  });
+  document.getElementById('bulk-reserve-input').value = '';
+  updateAllUI();
+  saveToGist();
+  alert(`${gameState.countries.length}国に${amt}名ずつ配布しました`);
+}
+
 function saveArmyUnit(cid, unitId) {
   const ad = gameState.armies && gameState.armies[cid];
   if (!ad || !ad.units) return;
@@ -2119,7 +2224,7 @@ function saveArmyUnit(cid, unitId) {
   u.name = newName;
   u.troops = Math.max(0, parseInt(document.getElementById(`edit-army-troops-${unitId}`).value) || 0);
   u.location = document.getElementById(`edit-army-loc-${unitId}`).value || null;
-  u.ap = Math.min(50, Math.max(0, parseInt(document.getElementById(`edit-army-ap-${unitId}`).value) || 0));
+  u.ap = u.nationalGuard ? 20 : Math.min(50, Math.max(0, parseInt(document.getElementById(`edit-army-ap-${unitId}`).value) || 0));
   u.atkStrategy = document.getElementById(`edit-army-atk-${unitId}`).value || '通常攻勢';
   u.defStrategy = document.getElementById(`edit-army-def-${unitId}`).value || '通常防衛';
   renderEditArmyList(cid);
@@ -2135,6 +2240,22 @@ function addArmyUnit(cid) {
   units.push({
     id: uid(), name: `第${units.length + 1}軍`, troops: 0, location: null,
     ap: 50, mode: 'idle', specialUnits: [], atkStrategy: '通常攻勢', defStrategy: '通常防衛', orders: []
+  });
+  renderEditArmyList(cid);
+}
+
+function addGuardUnit(cid) {
+  if (!gameState.armies) gameState.armies = {};
+  if (!gameState.armies[cid]) gameState.armies[cid] = { reserve: 0, units: [] };
+  if (!gameState.armies[cid].units) gameState.armies[cid].units = [];
+  if (gameState.armies[cid].units.some(u => u.nationalGuard)) {
+    alert('この国には既に国家守備隊があります');
+    return;
+  }
+  gameState.armies[cid].units.push({
+    id: uid(), name: '国家守備隊', troops: 0, location: null,
+    ap: 20, mode: 'idle', specialUnits: [], atkStrategy: '通常攻勢', defStrategy: '通常防衛',
+    orders: [], nationalGuard: true
   });
   renderEditArmyList(cid);
 }
@@ -2185,12 +2306,13 @@ function normalizeGameState(gs) {
     ad.units.forEach(u => {
       if (!u.id) u.id = uid();
       if (u.troops == null) u.troops = 0;
-      if (u.ap == null) u.ap = 50;
+      if (u.ap == null) u.ap = u.nationalGuard ? 20 : 50;
       if (!u.mode) u.mode = 'idle';
       if (!u.specialUnits) u.specialUnits = [];
       if (!u.atkStrategy) u.atkStrategy = '通常攻勢';
       if (!u.defStrategy) u.defStrategy = '通常防衛';
       if (u.location === undefined) u.location = null;
+      if (u.nationalGuard == null) u.nationalGuard = false;
     });
   });
   // pendingOrders: 旧 startTime → startRound に読み替え
